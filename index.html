@@ -860,15 +860,24 @@ body.admin-mode .chat-fab{display:none;}
     </div>
     <div class="wrap foot-bottom">
       <span class="foot-left">
-        <a href="#admin" class="admin-link" id="footAdminLink">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.36.4.66.73.86H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
-          Към админ панела
-        </a>
         <span>© 2026 Laplandya Gift Store. Всички права запазени.</span>
       </span>
       <span class="dedication">направено с ♥, специално за теб</span>
     </div>
   </footer>
+
+  <!-- вход в администрацията (само на /admin или #admin — няма видима връзка към него в сайта) -->
+  <div class="overlay" id="adminLoginOverlay">
+    <div class="modal" role="dialog" aria-modal="true" style="max-width:380px;">
+      <button class="modal-close" id="closeAdminLogin" aria-label="Затвори">✕</button>
+      <h3 style="margin-top:0;">Вход в администрацията</h3>
+      <p class="hint">Достъпът е ограничен — въведи потребител и парола.</p>
+      <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username"></div>
+      <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password"></div>
+      <p id="alError" class="hint" style="color:#c0392b; display:none;">Грешен потребител или парола.</p>
+      <div class="form-actions"><button class="btn btn-primary" id="alSubmit" style="width:100%;">Влез</button></div>
+    </div>
+  </div>
 
   <!-- product modal -->
   <div class="overlay" id="productOverlay">
@@ -904,6 +913,11 @@ body.admin-mode .chat-fab{display:none;}
           <div class="pm-sect hidden" id="pmAllergenWrap">
             <h4>Съдържание и алергени</h4>
             <p style="font-size:.85rem; color:var(--ink-soft);" id="pmAllergens"></p>
+          </div>
+
+          <div class="pm-sect hidden" id="pmVideoWrap">
+            <h4>Виж го на видео</h4>
+            <div id="pmVideoEmbed"></div>
           </div>
 
           <div class="pm-sect">
@@ -1445,6 +1459,7 @@ body.admin-mode .chat-fab{display:none;}
             <div class="field"><label for="pfDims">Размери</label><input id="pfDims" placeholder="Напр. 34 × 24 × 18 см"></div>
             <div class="field"><label for="pfWeight">Тегло</label><input id="pfWeight" placeholder="Напр. 2,1 кг"></div>
             <div class="field full"><label for="pfAllergens">Съдържание и алергени</label><textarea id="pfAllergens" rows="2" placeholder="Напр. Съдържа мляко, соя и лешници. Съдържа алкохол."></textarea></div>
+            <div class="field full"><label for="pfVideoUrl">Видео клипче (линк от TikTok или Instagram)</label><input id="pfVideoUrl" placeholder="Напр. https://www.tiktok.com/@laplandya/video/1234567890"></div>
             <div class="field full">
               <label>Състав на кутията</label>
               <div class="recipe-editor" id="pfRecipe"></div>
@@ -2680,6 +2695,7 @@ function renderGrid(){
       <div class="thumb" data-open="${esc(p.id)}">
         <img src="${p.image||''}" alt="${esc(p.name)}" loading="lazy">
         <span class="badge">Ръчно</span>
+        ${p.videoUrl ? '<span class="badge" style="left:auto; right:44px; background:rgba(0,0,0,.55); color:#fff;">▶ Видео</span>' : ''}
         <button class="fav" data-fav="${esc(p.id)}" aria-label="Добави в любими">🤍</button>
       </div>
       <div class="card-body">
@@ -2762,6 +2778,9 @@ function openProduct(id){
   const aw = $('#pmAllergenWrap');
   if(p.allergens){ $('#pmAllergens').textContent = p.allergens; aw.classList.remove('hidden'); }
   else aw.classList.add('hidden');
+
+  // видео клипче (TikTok/Instagram)
+  if(typeof renderProductVideo === 'function') renderProductVideo(p.videoUrl||'');
 
   $$('#pmContents [data-takeitem]').forEach(b=>b.addEventListener('click', e=>{
     e.stopPropagation();
@@ -3259,7 +3278,21 @@ function placeOrder(){
    ============================================================ */
 let adminReady = false;
 
-function isAdminRoute(){ return location.hash.replace('#','').toLowerCase() === 'admin'; }
+/* Администрацията няма видима връзка в сайта — стига се само през
+   адрес /admin (или #admin), и преди да се покаже, се иска
+   потребител и парола (виж wireAdminLogin по-долу). Истинската
+   защита все пак е паролата на сървъра (ADMIN_TOKEN) — влизането
+   тук просто я проверява през сървъра, вместо да я пази в кода на
+   сайта, който е публично видим за всеки. */
+const ADMIN_LOGIN_USER = 'adminTSB95';
+function isAdminRoute(){
+  if(location.hash.replace('#','').toLowerCase() === 'admin') return true;
+  const path = location.pathname.replace(/\/+$/,'').toLowerCase();
+  return path === '/admin';
+}
+function isAdminUnlocked(){
+  try{ return sessionStorage.getItem('lpl_admin_unlocked') === '1'; }catch(e){ return false; }
+}
 function applyRoute(){
   const admin = isAdminRoute();
   document.body.classList.toggle('admin-mode', admin);
@@ -3270,12 +3303,62 @@ function applyRoute(){
     $('#profileOverlay').classList.remove('open');
     closeCartFn();
     document.body.style.overflow = '';
+    if(!isAdminUnlocked()){
+      $('#adminLoginOverlay').classList.add('open');
+      window.scrollTo(0,0);
+      return;
+    }
+    $('#adminLoginOverlay').classList.remove('open');
     renderAdmin(); adminReady = true; window.scrollTo(0,0);
     return;
   }
+  $('#adminLoginOverlay').classList.remove('open');
   if(typeof applyFeatureRoute === 'function') applyFeatureRoute();
 }
 window.addEventListener('hashchange', applyRoute);
+
+/* Проверява паролата през сървъра (GET /admin/check с X-Admin-Token) —
+   истинската парола никога не се пази в кода на сайта. */
+async function verifyAdminPasswordOnServer(pass){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(!base) return null; // няма как да проверим — да минем на резервния локален вариант
+  try{
+    const r = await fetch(base + '/admin/check', { headers: {'X-Admin-Token': pass} });
+    if(r.status === 200) return true;
+    if(r.status === 401) return false;
+    return null; // сървърът не е конфигуриран или временен проблем
+  }catch(e){ return null; }
+}
+function wireAdminLogin(){
+  const overlay = $('#adminLoginOverlay');
+  if(!overlay) return;
+  const doLogin = async ()=>{
+    const user = $('#alUser').value.trim();
+    const pass = $('#alPass').value;
+    const errEl = $('#alError');
+    errEl.style.display = 'none';
+    if(user !== ADMIN_LOGIN_USER){ errEl.style.display=''; return; }
+    const remote = await verifyAdminPasswordOnServer(pass);
+    if(remote === false){ errEl.style.display=''; return; }
+    if(remote === null){
+      // няма връзка със сървъра — пускаме само по потребител, за да
+      // не остане администраторът напълно без достъп при проблем
+      if(!pass){ errEl.style.display=''; return; }
+    }
+    try{ sessionStorage.setItem('lpl_admin_unlocked', '1'); }catch(e){}
+    STORE.settings.adminToken = pass; persist();
+    $('#alUser').value=''; $('#alPass').value='';
+    overlay.classList.remove('open');
+    renderAdmin(); adminReady = true; window.scrollTo(0,0);
+  };
+  $('#alSubmit').addEventListener('click', doLogin);
+  $('#alPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+  $('#alUser').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+  $('#closeAdminLogin').addEventListener('click', ()=>{
+    overlay.classList.remove('open');
+    if(isAdminRoute()){ location.hash=''; if(history.pushState) history.pushState('', document.title, location.pathname.replace(/\/admin\/?$/,'/') || '/'); }
+  });
+}
 
 function renderAdmin(){
   renderDash(); renderProductRows(); renderCatRows(); renderOrderRows();
@@ -3389,6 +3472,7 @@ function openProductForm(id){
   $('#pfDims').value = p ? (p.dims||'') : '';
   $('#pfWeight').value = p ? (p.weight||'') : '';
   $('#pfAllergens').value = p ? (p.allergens||'') : '';
+  $('#pfVideoUrl').value = p ? (p.videoUrl||'') : '';
   editingRecipe = p && (p.recipe||[]).length ? p.recipe.map(r=>({id:r.id, q:r.q})) : [];
   $('#pfFixedPrice').checked = p ? p.priceMode==='fixed' : false;
   $('#pfPrice').readOnly = !$('#pfFixedPrice').checked;
@@ -3928,7 +4012,11 @@ function wireAdmin(){
   if($('#syncOrders')) $('#syncOrders').addEventListener('click', ()=>{
     if(typeof syncOrdersFromServer==='function') syncOrdersFromServer();
   });
-  $('#exitAdmin').addEventListener('click', ()=>{ location.hash=''; document.body.classList.remove('admin-mode'); });
+  $('#exitAdmin').addEventListener('click', ()=>{
+    location.hash='';
+    document.body.classList.remove('admin-mode');
+    if(location.pathname.replace(/\/+$/,'').toLowerCase()==='/admin' && history.pushState) history.pushState('', document.title, '/');
+  });
   $('#refreshDash').addEventListener('click', ()=>{ renderAdmin(); showToast('Обновено'); });
 
   // Продукти
@@ -3955,6 +4043,7 @@ function wireAdmin(){
       priceMode: $('#pfFixedPrice').checked ? 'fixed' : 'auto',
       dims:$('#pfDims').value.trim(), weight:$('#pfWeight').value.trim(),
       allergens:$('#pfAllergens').value.trim(),
+      videoUrl:$('#pfVideoUrl').value.trim(),
       addon:$('#pfAddon').checked, active:$('#pfActive').checked
     };
     if(editingProductId){
@@ -4135,7 +4224,7 @@ async function start(){
   if(!STORE.pricing) STORE.pricing = seedStore().pricing;
   renderStoreChrome(); renderShopTabs(); renderNav(); renderOccasions(); renderFootCats(); renderGrid(); renderCart();
   renderCheckoutPayment(); renderOccasionSelect(); renderClaimProducts();
-  wireStore(); wireAccount(); wireSocialAuth(); wireFeatures(); wireChat(); wireAdmin(); wireAdminExtra(); wireAdminItems();
+  wireStore(); wireAccount(); wireSocialAuth(); wireFeatures(); wireChat(); wireAdmin(); wireAdminExtra(); wireAdminItems(); wireAdminLogin();
   applyRoute();
 }
 
@@ -4159,6 +4248,56 @@ function openPage(id){
 function closePage(id){
   $('#'+id).classList.remove('open');
   document.body.style.overflow='';
+}
+
+/* ============================================================
+   ВИДЕО КЛИПЧЕ (TikTok / Instagram) — админът слага линк към
+   клипче на продукта, а тук се вгражда официалният плейър на
+   TikTok или Instagram, без да са нужни ключове или сървър.
+   ============================================================ */
+function detectVideoPlatform(url){
+  const u = String(url||'').trim();
+  if(!u) return null;
+  if(/tiktok\.com/i.test(u)) return 'tiktok';
+  if(/instagram\.com/i.test(u)) return 'instagram';
+  return null;
+}
+function ensureTikTokScript(){
+  // TikTok сканира новите blockquote-и само когато скриптът се
+  // изпълни наново — затова го добавяме отново при всяко клипче.
+  const old = document.getElementById('tiktokEmbedScript');
+  if(old) old.remove();
+  const s = document.createElement('script');
+  s.id = 'tiktokEmbedScript';
+  s.async = true;
+  s.src = 'https://www.tiktok.com/embed.js';
+  document.body.appendChild(s);
+}
+function ensureInstagramScript(cb){
+  if(window.instgrm && window.instgrm.Embeds){ cb(); return; }
+  const existing = document.getElementById('instagramEmbedScript');
+  if(existing){ existing.addEventListener('load', cb, {once:true}); return; }
+  const s = document.createElement('script');
+  s.id = 'instagramEmbedScript';
+  s.async = true;
+  s.src = 'https://www.instagram.com/embed.js';
+  s.addEventListener('load', cb, {once:true});
+  document.body.appendChild(s);
+}
+function renderProductVideo(url){
+  const wrap = $('#pmVideoWrap');
+  const box = $('#pmVideoEmbed');
+  if(!wrap || !box) return;
+  const platform = detectVideoPlatform(url);
+  if(!platform){ wrap.classList.add('hidden'); box.innerHTML=''; return; }
+  wrap.classList.remove('hidden');
+  if(platform==='tiktok'){
+    box.innerHTML = `<blockquote class="tiktok-embed" cite="${esc(url)}" style="max-width:100%; min-width:280px;"><section></section></blockquote>`;
+    ensureTikTokScript();
+  } else {
+    box.innerHTML = `<blockquote class="instagram-media" data-instgrm-permalink="${esc(url)}" data-instgrm-version="14" style="width:100%;"></blockquote>`;
+    ensureInstagramScript(()=>{ try{ window.instgrm.Embeds.process(); }catch(e){} });
+  }
 }
 
 /* ============================================================
