@@ -2316,7 +2316,26 @@ function unitPrice(p){
 const shopProducts = () => STORE.products.filter(p=>p.active!==false && !isAddon(p));
 const addonProducts = () => STORE.products.filter(p=>p.active!==false && isAddon(p));
 
-/* Ревюта и рейтинг */
+/* Ревюта и рейтинг
+   Одобрените отзиви идват от сървъра — иначе клиент, който пише
+   отзив от своя телефон, никога не би се показал на друг посетител
+   с различен браузър/устройство. Локално пазим и собствените си
+   току-що написани (още неодобрени) отзиви, за да ги виждаме веднага. */
+async function syncApprovedReviewsFromServer(pid){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(!base) return;
+  try{
+    const url = base + '/reviews/approved' + (pid ? ('?productId=' + encodeURIComponent(pid)) : '');
+    const r = await fetch(url);
+    if(!r.ok) return;
+    const data = await r.json();
+    const incoming = data.reviews || [];
+    const pending = (STORE.reviews||[]).filter(x=>!x.approved && (!pid || x.productId===pid));
+    const untouched = (STORE.reviews||[]).filter(x=>pid ? (x.productId!==pid) : false);
+    STORE.reviews = [...untouched, ...incoming, ...pending.filter(p=>!incoming.some(i=>i.id===p.id))];
+    persist();
+  }catch(e){ /* тихо — показваме каквото има локално */ }
+}
 const approvedReviews = pid => (STORE.reviews||[]).filter(r=>r.productId===pid && r.approved);
 function ratingOf(pid){
   const rs = approvedReviews(pid);
@@ -2374,18 +2393,61 @@ const custByEmail = em => STORE.customers.find(c=>c.email.toLowerCase()===String
 const custById = id => STORE.customers.find(c=>c.id===id);
 const initialsOf = name => String(name||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
 
-function restoreSession(){
+function customerAuthHeader(){
   try{
+    const t = localStorage.getItem('lpl_customer_token');
+    return t ? {'Authorization': 'Bearer ' + t} : {};
+  }catch(e){ return {}; }
+}
+/* Праща промени в профила (адреси, телефон, имейл...) към сървъра,
+   за да ги виждаш от всяко устройство, не само от това, на което
+   клиентът в момента седи. Тихо не прави нищо, ако няма профил
+   през сървъра (клиентът е регистриран само локално) или няма връзка. */
+async function syncCustomerProfileToServer(fields){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  let token; try{ token = localStorage.getItem('lpl_customer_token'); }catch(e){ token = null; }
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/customers/me', {
+      method: 'PATCH',
+      headers: Object.assign({'Content-Type':'application/json'}, customerAuthHeader()),
+      body: JSON.stringify(fields)
+    });
+  }catch(e){ /* локалната промяна вече е запазена — тихо пропускаме */ }
+}
+async function restoreSession(){
+  try{
+    let token; try{ token = localStorage.getItem('lpl_customer_token'); }catch(e){ token = null; }
+    const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+    if(token && base){
+      try{
+        const r = await fetch(base + '/customers/me', { headers: customerAuthHeader() });
+        if(r.ok){
+          const data = await r.json();
+          const cust = data.customer;
+          const idx = STORE.customers.findIndex(c=>c.id===cust.id);
+          if(idx>=0) STORE.customers[idx] = Object.assign({}, STORE.customers[idx], cust);
+          else STORE.customers.push(cust);
+          persist();
+          currentUser = cust;
+          updateAccountButton();
+          return;
+        }
+        if(r.status===401){ try{ localStorage.removeItem('lpl_customer_token'); }catch(e){} }
+      }catch(e){ /* няма връзка — пада към локалния запис по-долу */ }
+    }
     const id = localStorage.getItem('lpl_session');
     if(id){ const c = custById(id); if(c) currentUser = c; }
   }catch(e){}
   updateAccountButton();
 }
-function setSession(cust){
+function setSession(cust, token){
   currentUser = cust;
   try{
     if(cust) localStorage.setItem('lpl_session', cust.id);
     else localStorage.removeItem('lpl_session');
+    if(token) localStorage.setItem('lpl_customer_token', token);
+    else if(cust===null) localStorage.removeItem('lpl_customer_token');
   }catch(e){}
   updateAccountButton();
 }
@@ -2715,6 +2777,19 @@ function openProduct(id){
 
   $('#productOverlay').classList.add('open');
   bump('views', id, 1); persist();
+
+  // презарежда одобрените отзиви за тази кутия от сървъра, в случай
+  // че междувременно е публикуван нов отзив от друго устройство
+  if(typeof syncApprovedReviewsFromServer === 'function'){
+    syncApprovedReviewsFromServer(id).then(()=>{
+      if(currentProductId!==id) return;
+      const r2 = ratingOf(id);
+      $('#pmRating').innerHTML = r2
+        ? `${starsHtml(r2.avg)}<b>${r2.avg.toFixed(1)}</b><span>от ${r2.count} ${r2.count===1?'отзив':'отзива'}</span>`
+        : '<span>Още няма отзиви — бъди първият</span>';
+      renderProductReviews(id);
+    });
+  }
 }
 
 function renderProductReviews(pid){
@@ -3133,6 +3208,7 @@ function placeOrder(){
       if(!exists) currentUser.addresses.push({id:uid('a'), label:'Адрес '+(currentUser.addresses.length+1), text:main.address});
     }
     if(!currentUser.phone && main.phone) currentUser.phone = main.phone;
+    syncCustomerProfileToServer({addresses: currentUser.addresses, phone: currentUser.phone, preferredPayment: currentUser.preferredPayment});
   }
 
   persist();
@@ -3433,6 +3509,26 @@ function custStats(c){
   const mine = ordersOfCustomer(c.id).filter(o=>o.status!=='cancelled');
   return {count: mine.length, total: mine.reduce((s,o)=>s+o.total,0)};
 }
+/* Директорията с клиенти в Админ се допълва от сървъра, за да
+   виждаш регистрациите, направени от всяко устройство, не само
+   профилите, създадени в твоя собствен браузър. */
+async function syncCustomersFromServer(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    const r = await fetch(base + '/customers', { headers: {'X-Admin-Token': token} });
+    if(!r.ok) return;
+    const data = await r.json();
+    const known = new Set(STORE.customers.map(c=>c.id));
+    (data.customers||[]).forEach(c=>{
+      const idx = STORE.customers.findIndex(x=>x.id===c.id);
+      if(idx>=0) STORE.customers[idx] = Object.assign({}, STORE.customers[idx], c);
+      else { STORE.customers.push(c); known.add(c.id); }
+    });
+    persist(); renderCustomerRows();
+  }catch(e){ /* тихо — локалните данни остават */ }
+}
 function renderCustomerRows(){
   const list = STORE.customers;
   const withStats = list.map(c=>Object.assign({c}, custStats(c)));
@@ -3480,6 +3576,52 @@ function renderCustomerRows(){
 }
 
 /* ---------- Съобщения ---------- */
+/* Съобщенията са вътрешни бележки, "видими за всички с достъп" —
+   затова, за да свършат тази работа, трябва да седят на сървъра,
+   не само в браузъра на този, който ги е написал. */
+async function syncMessagesFromServer(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    const r = await fetch(base + '/messages', { headers: {'X-Admin-Token': token} });
+    if(!r.ok) return;
+    const data = await r.json();
+    STORE.messages = data.messages || [];
+    persist(); renderMessages();
+    $('#navMsgCount').textContent = STORE.messages.filter(x=>!x.done).length;
+  }catch(e){ /* тихо — локалните данни остават */ }
+}
+async function syncMessageDoneToServer(id, done){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/messages/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: {'Content-Type':'application/json', 'X-Admin-Token': token},
+      body: JSON.stringify({done})
+    });
+  }catch(e){}
+}
+async function deleteMessageOnServer(id){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/messages/' + encodeURIComponent(id), { method:'DELETE', headers:{'X-Admin-Token': token} });
+  }catch(e){}
+}
+async function addMessageOnServer(msg){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/messages', {
+      method: 'POST', headers: {'Content-Type':'application/json', 'X-Admin-Token': token},
+      body: JSON.stringify({author: msg.author, text: msg.text})
+    });
+  }catch(e){}
+}
 function renderMessages(){
   const list = STORE.messages.slice().sort((a,b)=> (a.done===b.done) ? b.createdAt-a.createdAt : (a.done?1:-1));
   const el = $('#msgList');
@@ -3497,11 +3639,13 @@ function renderMessages(){
     const m = STORE.messages.find(x=>x.id===b.dataset.donemsg);
     m.done = !m.done; persist(); renderMessages();
     $('#navMsgCount').textContent = STORE.messages.filter(x=>!x.done).length;
+    syncMessageDoneToServer(m.id, m.done);
   }));
   $$('#msgList [data-delmsg]').forEach(b=>b.addEventListener('click',()=>{
     STORE.messages = STORE.messages.filter(x=>x.id!==b.dataset.delmsg);
     persist(); renderMessages();
     $('#navMsgCount').textContent = STORE.messages.filter(x=>!x.done).length;
+    deleteMessageOnServer(b.dataset.delmsg);
   }));
 }
 
@@ -3603,6 +3747,38 @@ function wireAccount(){
     if(!firstName || !lastName || !email || !phone || !pass){ showToast('Попълни име, фамилия, имейл, телефон и парола'); return; }
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ showToast('Имейлът не изглежда валиден'); return; }
     if(pass.length < 6){ showToast('Паролата трябва да е поне 6 знака'); return; }
+
+    // регистрацията минава през сървъра, за да може клиентът после
+    // да влиза от кой да е телефон/компютър, не само от този браузър
+    const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+    if(base){
+      try{
+        const r = await fetch(base + '/customers/register', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({firstName, lastName, email, phone, password: pass})
+        });
+        const data = await r.json().catch(()=>({}));
+        if(r.ok && data.ok){
+          const cust = data.customer;
+          const idx = STORE.customers.findIndex(c=>c.email && c.email.toLowerCase()===cust.email.toLowerCase());
+          if(idx>=0) STORE.customers[idx] = cust; else STORE.customers.push(cust);
+          persist(); setSession(cust, data.token); closeAuth();
+          $('#rgFirst').value=''; $('#rgLast').value=''; $('#rgEmail').value=''; $('#rgPhone').value=''; $('#rgPass').value='';
+          showToast('Профилът е създаден 🎀 Вече можеш да влизаш от всяко устройство.');
+          if(typeof sendVerificationEmail === 'function') sendVerificationEmail(cust);
+          openProfile();
+          if(adminReady) renderAdmin();
+          return;
+        }
+        if(data.error==='email-taken'){ showToast('Вече има профил с този имейл — влез вместо това'); return; }
+        if(data.error==='weak-password'){ showToast('Паролата трябва да е поне 6 знака'); return; }
+        if(data.error && data.error!=='not-configured'){ showToast('Регистрацията не успя — опитай пак'); return; }
+        // 'not-configured' -> пада към локалния резервен вариант по-долу
+      }catch(e){ /* няма връзка със сървъра — пада към локалния резервен вариант по-долу */ }
+    }
+
+    // резервен локален вариант — само докато "Помощник за подаръци"
+    // не е настроен в Настройки; работи само в този браузър
     if(custByEmail(email)){ showToast('Вече има профил с този имейл — влез вместо това'); return; }
     const cust = {
       id: uid('u'), name: firstName+' '+lastName, firstName, lastName, email, phone,
@@ -3612,8 +3788,7 @@ function wireAccount(){
     STORE.customers.push(cust);
     persist(); setSession(cust); closeAuth();
     $('#rgFirst').value=''; $('#rgLast').value=''; $('#rgEmail').value=''; $('#rgPhone').value=''; $('#rgPass').value='';
-    showToast('Профилът е създаден 🎀 Провери имейла си, за да го потвърдиш.');
-    if(typeof sendVerificationEmail === 'function') sendVerificationEmail(cust);
+    showToast('Профилът е създаден 🎀');
     openProfile();
     if(adminReady) renderAdmin();
   });
@@ -3621,6 +3796,30 @@ function wireAccount(){
   $('#doLogin').addEventListener('click', async ()=>{
     const email = $('#liEmail').value.trim(), pass = $('#liPass').value;
     if(!email || !pass){ showToast('Попълни имейл и парола'); return; }
+
+    const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+    if(base){
+      try{
+        const r = await fetch(base + '/customers/login', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({email, password: pass})
+        });
+        if(r.ok){
+          const data = await r.json();
+          const cust = data.customer;
+          const idx = STORE.customers.findIndex(c=>c.email && c.email.toLowerCase()===cust.email.toLowerCase());
+          if(idx>=0) STORE.customers[idx] = cust; else STORE.customers.push(cust);
+          persist(); setSession(cust, data.token); closeAuth();
+          $('#liEmail').value=''; $('#liPass').value='';
+          showToast('Здравей, ' + cust.name.split(' ')[0] + '!');
+          openProfile();
+          return;
+        }
+        if(r.status===401){ showToast('Грешен имейл или парола'); return; }
+        // друга грешка (напр. сървърът не е настроен) -> резервен вариант по-долу
+      }catch(e){ /* няма връзка — пада към локалния резервен вариант по-долу */ }
+    }
+
     const cust = custByEmail(email);
     if(!cust || cust.passHash !== await hashPass(pass)){ showToast('Грешен имейл или парола'); return; }
     setSession(cust); closeAuth();
@@ -3645,6 +3844,7 @@ function wireAccount(){
     currentUser.addresses.push({id:uid('a'), label:$('#adLabel').value.trim()||('Адрес '+(currentUser.addresses.length+1)), text});
     $('#adLabel').value=''; $('#adText').value='';
     persist(); renderProfile(); showToast('Адресът е запазен');
+    syncCustomerProfileToServer({addresses: currentUser.addresses});
   });
 
   $('#saveProfile').addEventListener('click', ()=>{
@@ -3657,6 +3857,7 @@ function wireAccount(){
     persist(); renderProfile(); updateAccountButton();
     showToast('Данните са запазени');
     if(adminReady) renderAdmin();
+    syncCustomerProfileToServer({name: currentUser.name, phone: currentUser.phone, email: currentUser.email});
   });
 
   $('#fSavedAddr').addEventListener('change', e=>{
@@ -3718,6 +3919,11 @@ function wireAdmin(){
     $$('.admin-panel').forEach(p=>p.classList.toggle('active', p.dataset.panel===b.dataset.panel));
     window.scrollTo(0,0);
     if(b.dataset.panel==='orders' && typeof syncOrdersFromServer==='function') syncOrdersFromServer();
+    if(b.dataset.panel==='reviews' && typeof syncReviewsFromServer==='function') syncReviewsFromServer();
+    if(b.dataset.panel==='corp' && typeof syncCorpLeadsFromServer==='function') syncCorpLeadsFromServer();
+    if(b.dataset.panel==='vouchers' && typeof syncVouchersFromServer==='function') syncVouchersFromServer();
+    if(b.dataset.panel==='messages' && typeof syncMessagesFromServer==='function') syncMessagesFromServer();
+    if(b.dataset.panel==='customers' && typeof syncCustomersFromServer==='function') syncCustomersFromServer();
   }));
   if($('#syncOrders')) $('#syncOrders').addEventListener('click', ()=>{
     if(typeof syncOrdersFromServer==='function') syncOrdersFromServer();
@@ -3831,11 +4037,13 @@ function wireAdmin(){
   $('#addMsg').addEventListener('click', ()=>{
     const text = $('#mfText').value.trim();
     if(!text){ showToast('Напиши съобщение'); return; }
-    STORE.messages.unshift({id:uid('m'), author:$('#mfAuthor').value.trim()||'Екип', text, createdAt:Date.now(), done:false});
+    const msg = {id:uid('m'), author:$('#mfAuthor').value.trim()||'Екип', text, createdAt:Date.now(), done:false};
+    STORE.messages.unshift(msg);
     $('#mfText').value='';
     persist(); renderMessages();
     $('#navMsgCount').textContent = STORE.messages.filter(m=>!m.done).length;
     showToast('Съобщението е публикувано');
+    addMessageOnServer(msg);
   });
 
   // Настройки
@@ -3920,7 +4128,8 @@ async function start(){
 
   await initStorage();
 
-  restoreSession();
+  await restoreSession();
+  if(typeof syncApprovedReviewsFromServer === 'function') await syncApprovedReviewsFromServer();
   if(typeof checkEmailVerification === 'function') await checkEmailVerification();
   if(!STORE.items || !STORE.items.length) STORE.items = seedItems();
   if(!STORE.pricing) STORE.pricing = seedStore().pricing;
@@ -4213,6 +4422,23 @@ function renderQuizResults(){
 function findVoucher(code){
   return (STORE.vouchers||[]).find(v=>v.code.toUpperCase()===String(code).trim().toUpperCase());
 }
+/* Проверява кода в централната база — така ваучер, издаден от
+   администратора на неговото устройство, работи и на устройството
+   на клиента. Ако сървърът е недостъпен, пада обратно към
+   локалната проверка (findVoucher), колкото да не блокира чекаута. */
+async function validateVoucherOnServer(code){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(!base) return null;
+  try{
+    const r = await fetch(base + '/vouchers/validate', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({code})
+    });
+    const data = await r.json();
+    return data;
+  }catch(e){ return null; }
+}
 
 /* ============================================================
    ПОДАРЪК БЕЗ АДРЕС
@@ -4346,14 +4572,27 @@ function wireFeatures(){
     if(!reviewRating){ showToast('Избери оценка от 1 до 5 звезди'); return; }
     const text = $('#rvText').value.trim();
     if(!text){ showToast('Напиши няколко думи'); return; }
-    STORE.reviews.unshift({
+    const rv = {
       id: uid('r'), productId: currentProductId, author: $('#rvAuthor').value.trim() || 'Клиент',
       rating: reviewRating, text, photo: reviewPhoto || '', createdAt: Date.now(), approved: false
-    });
+    };
+    STORE.reviews.unshift(rv);
     persist();
     resetReviewForm();
     showToast('Благодарим! Отзивът чака одобрение.');
     if(adminReady) renderAdmin();
+    // праща се и към сървъра, за да го видиш в Админ → Отзиви,
+    // дори ако клиентът е пазарувал от съвсем друго устройство
+    (async ()=>{
+      const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+      if(!base) return;
+      try{
+        await fetch(base + '/reviews', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({productId: rv.productId, author: rv.author, rating: rv.rating, text: rv.text, photo: rv.photo})
+        });
+      }catch(e){ /* тихо — отзивът вече е запазен локално */ }
+    })();
   });
 
   // чекаут — брояч на символите
@@ -4371,12 +4610,29 @@ function wireFeatures(){
       $('#fNote').dispatchEvent(new Event('input'));
     }
   });
-  // ваучер
-  $('#applyVoucher').addEventListener('click', ()=>{
+  // ваучер — проверява се първо в централната база (работи от
+  // всяко устройство), а ако сървърът не е достъпен, пада обратно
+  // към локалния списък
+  $('#applyVoucher').addEventListener('click', async ()=>{
     const code = $('#fVoucher').value.trim();
     if(!code){ showToast('Въведи код'); return; }
-    const v = findVoucher(code);
     const ok = $('#voucherOk');
+    const remote = await validateVoucherOnServer(code);
+    if(remote){
+      if(remote.ok){
+        appliedVoucher = {code: code.toUpperCase(), amount: remote.amount};
+        ok.textContent = `Ваучер за ${fmt(remote.amount)} е приложен.`;
+        ok.classList.remove('hidden');
+        showToast('Ваучерът е приложен 🎟️');
+      } else {
+        appliedVoucher=null; ok.classList.add('hidden');
+        showToast(remote.error==='used' ? 'Този ваучер вече е използван' : 'Такъв код не съществува');
+      }
+      renderCheckoutSummary();
+      return;
+    }
+    // няма връзка със сървъра — резервна локална проверка
+    const v = findVoucher(code);
     if(!v){ appliedVoucher=null; ok.classList.add('hidden'); showToast('Такъв код не съществува'); }
     else if(v.used){ appliedVoucher=null; ok.classList.add('hidden'); showToast('Този ваучер вече е използван'); }
     else {
@@ -4416,6 +4672,18 @@ function wireFeatures(){
     ['cpCompany','cpName','cpEmail','cpPhone','cpQty','cpBudget','cpNote'].forEach(id=>$('#'+id).value='');
     showToast('Запитването е изпратено — ще се свържем с теб');
     if(adminReady) renderAdmin();
+    // праща се и към сървъра, за да стигне до вас дори ако не сте
+    // на същото устройство/браузър като запитващата фирма
+    (async ()=>{
+      const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+      if(!base) return;
+      try{
+        await fetch(base + '/corp-leads', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({company: lead.company, name: lead.name, email: lead.email, phone: lead.phone, qty: lead.qty, budget: lead.budget, note: lead.note})
+        });
+      }catch(e){ /* тихо — запитването вече е запазено локално */ }
+    })();
   });
 
   // подарък без адрес
@@ -5158,9 +5426,50 @@ function wireChat(){
 
 /* ============================================================
    Допълнителни админ раздели: отзиви, фирми, ваучери, конфигуратор
+
+   Отзивите, запитванията от фирми и ваучерите се пазят и на
+   сървъра (не само в браузъра) — иначе отзив, написан от клиент,
+   или запитване от фирма, никога не биха стигнали до вас, защото
+   щяха да си стоят само в неговия собствен браузър. Всеки път,
+   щом отвориш съответния раздел в Админ, той се синхронизира.
    ============================================================ */
 
 /* ---------- Отзиви ---------- */
+async function syncReviewsFromServer(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  const statusEl = $('#reviewSyncStatus');
+  if(!base || !token){ if(statusEl) statusEl.textContent = ''; return; }
+  if(statusEl) statusEl.textContent = 'Синхронизирам…';
+  try{
+    const r = await fetch(base + '/reviews', { headers: {'X-Admin-Token': token} });
+    if(!r.ok){ if(statusEl) statusEl.textContent = ''; return; }
+    const data = await r.json();
+    STORE.reviews = data.reviews || [];
+    persist(); renderReviewRows(); if(typeof renderGrid==='function') renderGrid();
+    if(statusEl) statusEl.textContent = '';
+  }catch(e){ if(statusEl) statusEl.textContent = ''; }
+}
+async function syncReviewApprovalToServer(id, approved){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/reviews/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json', 'X-Admin-Token': token},
+      body: JSON.stringify({approved})
+    });
+  }catch(e){ /* локалната промяна вече е запазена — тихо пропускаме */ }
+}
+async function deleteReviewOnServer(id){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/reviews/' + encodeURIComponent(id), { method:'DELETE', headers:{'X-Admin-Token': token} });
+  }catch(e){}
+}
 function renderReviewRows(){
   const tb = $('#reviewRows');
   const list = (STORE.reviews||[]).slice().sort((a,b)=> (a.approved===b.approved) ? b.createdAt-a.createdAt : (a.approved?1:-1));
@@ -5185,13 +5494,15 @@ function renderReviewRows(){
   $$('#reviewRows [data-revtoggle]').forEach(b=>b.addEventListener('click', ()=>{
     const r = STORE.reviews.find(x=>x.id===b.dataset.revtoggle);
     r.approved = !r.approved;
-    persist(); renderAdmin(); renderGrid();
+    persist(); renderAdmin(); if(typeof renderGrid==='function') renderGrid();
+    syncReviewApprovalToServer(r.id, r.approved);
     showToast(r.approved ? 'Отзивът е публикуван' : 'Отзивът е скрит');
   }));
   $$('#reviewRows [data-revdel]').forEach(b=>b.addEventListener('click', ()=>{
     if(!confirm('Да изтрия ли този отзив?')) return;
     STORE.reviews = STORE.reviews.filter(x=>x.id!==b.dataset.revdel);
-    persist(); renderAdmin(); renderGrid();
+    persist(); renderAdmin(); if(typeof renderGrid==='function') renderGrid();
+    deleteReviewOnServer(b.dataset.revdel);
   }));
 }
 
@@ -5202,6 +5513,38 @@ const CORP_STATUSES = [
   {id:'won',      label:'Спечелено',   chip:'ok'},
   {id:'lost',     label:'Отпаднало',   chip:'off'},
 ];
+async function syncCorpLeadsFromServer(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    const r = await fetch(base + '/corp-leads', { headers: {'X-Admin-Token': token} });
+    if(!r.ok) return;
+    const data = await r.json();
+    STORE.corpLeads = data.leads || [];
+    persist(); renderCorpRows();
+  }catch(e){ /* тихо — локалните данни остават */ }
+}
+async function syncCorpStatusToServer(id, status){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/corp-leads/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json', 'X-Admin-Token': token},
+      body: JSON.stringify({status})
+    });
+  }catch(e){}
+}
+async function deleteCorpLeadOnServer(id){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/corp-leads/' + encodeURIComponent(id), { method:'DELETE', headers:{'X-Admin-Token': token} });
+  }catch(e){}
+}
 function renderCorpRows(){
   const tb = $('#corpRows');
   const list = STORE.corpLeads || [];
@@ -5236,8 +5579,10 @@ function renderCorpRows(){
     </td></tr>`;
   }).join('');
   $$('#corpRows [data-corpstatus]').forEach(sel=>sel.addEventListener('change', ()=>{
-    STORE.corpLeads.find(x=>x.id===sel.dataset.corpstatus).status = sel.value;
+    const l = STORE.corpLeads.find(x=>x.id===sel.dataset.corpstatus);
+    l.status = sel.value;
     persist(); showToast('Статусът е обновен');
+    syncCorpStatusToServer(l.id, l.status);
   }));
   $$('#corpRows [data-corpview]').forEach(b=>b.addEventListener('click', ()=>{
     $('#corpdet-'+b.dataset.corpview).classList.toggle('hidden');
@@ -5246,6 +5591,7 @@ function renderCorpRows(){
     if(!confirm('Да изтрия ли това запитване?')) return;
     STORE.corpLeads = STORE.corpLeads.filter(x=>x.id!==b.dataset.corpdel);
     persist(); renderAdmin();
+    deleteCorpLeadOnServer(b.dataset.corpdel);
   }));
 }
 
@@ -5253,6 +5599,38 @@ function renderCorpRows(){
 function genVoucherCode(){
   const part = () => Math.random().toString(36).slice(2,6).toUpperCase();
   return 'LPL-' + part() + '-' + part();
+}
+async function syncVouchersFromServer(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    const r = await fetch(base + '/vouchers', { headers: {'X-Admin-Token': token} });
+    if(!r.ok) return;
+    const data = await r.json();
+    STORE.vouchers = data.vouchers || [];
+    persist(); renderVoucherRows();
+  }catch(e){ /* тихо — локалните данни остават */ }
+}
+async function createVoucherOnServer(v){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/vouchers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-Admin-Token': token},
+      body: JSON.stringify({code: v.code, amount: v.amount, note: v.note})
+    });
+  }catch(e){ /* локално вече е създаден — но няма да работи от други устройства, докато няма връзка */ }
+}
+async function deleteVoucherOnServer(id){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  if(!base || !token) return;
+  try{
+    await fetch(base + '/vouchers/' + encodeURIComponent(id), { method:'DELETE', headers:{'X-Admin-Token': token} });
+  }catch(e){}
 }
 function renderVoucherRows(){
   const tb = $('#voucherRows');
@@ -5279,8 +5657,10 @@ function renderVoucherRows(){
   }));
   $$('#voucherRows [data-vdel]').forEach(b=>b.addEventListener('click', ()=>{
     if(!confirm('Да изтрия ли този ваучер?')) return;
+    const v = STORE.vouchers.find(x=>x.id===b.dataset.vdel);
     STORE.vouchers = STORE.vouchers.filter(x=>x.id!==b.dataset.vdel);
     persist(); renderAdmin();
+    if(v) deleteVoucherOnServer(v.id);
   }));
 }
 
@@ -5333,12 +5713,14 @@ function wireAdminExtra(){
   $('#addVoucher').addEventListener('click', ()=>{
     const amount = parseFloat($('#vfAmount').value);
     if(!amount || amount<=0){ showToast('Въведи стойност на ваучера'); return; }
-    STORE.vouchers.unshift({
+    const v = {
       id: uid('v'), code: genVoucherCode(), amount,
       note: $('#vfNote').value.trim(), createdAt: Date.now(), used:false
-    });
+    };
+    STORE.vouchers.unshift(v);
     $('#vfAmount').value=''; $('#vfNote').value='';
     persist(); renderAdmin(); showToast('Ваучерът е създаден 🎟️');
+    createVoucherOnServer(v);
   });
 
   // конфигуратор
