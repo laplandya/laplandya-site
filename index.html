@@ -1568,8 +1568,11 @@ body.admin-mode .chat-fab{display:none;}
       <!-- ORDERS -->
       <section class="admin-panel" data-panel="orders">
         <div class="admin-head">
-          <div><h1>Поръчки</h1><p>Всяка поръчка от витрината идва тук автоматично.</p></div>
-          <button class="btn btn-ghost btn-sm" id="exportOrders">Експорт CSV</button>
+          <div><h1>Поръчки</h1><p>Всяка поръчка от витрината идва тук автоматично. <span id="orderSyncStatus" style="color:var(--ink-soft);"></span></p></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-ghost btn-sm" id="syncOrders">↻ Синхронизирай</button>
+            <button class="btn btn-ghost btn-sm" id="exportOrders">Експорт CSV</button>
+          </div>
         </div>
         <div class="panel-card">
           <div class="table-scroll">
@@ -1757,6 +1760,11 @@ body.admin-mode .chat-fab{display:none;}
           <div class="field">
             <label for="sfAiGreeting">Първо съобщение към клиента</label>
             <textarea id="sfAiGreeting" rows="2" placeholder="Здравей! Ще ти помогна да избереш подарък…"></textarea>
+          </div>
+          <div class="field">
+            <label for="sfAdminToken">Парола за поръчки</label>
+            <input id="sfAdminToken" type="password" placeholder="Съвпада с ADMIN_TOKEN в Render">
+            <p class="mini-note">Позволява на панел „Поръчки“ да изтегли поръчките на всички клиенти от сървъра, не само от този браузър. Трябва да съвпада точно със стойността на <code>ADMIN_TOKEN</code>, зададена в Render.</p>
           </div>
           <div class="form-actions">
             <button class="btn btn-primary" id="saveAi">Запази</button>
@@ -3008,6 +3016,23 @@ async function sendInvoice(order){
     });
   }catch(e){ /* поръчката вече е приета — не пречим на клиента; вижте бутона в Админ → Поръчки */ }
 }
+/* ---------- Централен списък с поръчки ----------
+   Сайтът пази поръчките локално във всеки браузър — за да ги виждаш
+   ВСИЧКИ на едно място (Админ → Поръчки), всяка нова поръчка се
+   праща и към сървъра, който я записва трайно. Ако сървърът е
+   недостъпен, поръчката пак минава нормално локално — просто няма
+   да се появи в централния списък, докато не се оправи връзката. */
+async function sendOrderToServer(order){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(!base) return;
+  try{
+    await fetch(base + '/orders', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(order)
+    });
+  }catch(e){ /* тихо — поръчката вече е приета локално */ }
+}
 async function downloadInvoice(order){
   const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
   if(!base){ showToast('Няма зададен сървър за фактури — Настройки → Помощник за подаръци'); return; }
@@ -3052,6 +3077,7 @@ function placeOrder(){
     o.items.forEach(i=>{ if(!i.addon) bump('ordered', i.productId, i.qty); });
     sendWebhook(o);
     if(typeof sendInvoice === 'function') sendInvoice(o);
+    if(typeof sendOrderToServer === 'function') sendOrderToServer(o);
   });
 
   if(appliedVoucher){
