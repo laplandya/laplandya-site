@@ -866,19 +866,6 @@ body.admin-mode .chat-fab{display:none;}
     </div>
   </footer>
 
-  <!-- вход в администрацията (само на /admin или #admin — няма видима връзка към него в сайта) -->
-  <div class="overlay" id="adminLoginOverlay">
-    <div class="modal" role="dialog" aria-modal="true" style="max-width:380px;">
-      <button class="modal-close" id="closeAdminLogin" aria-label="Затвори">✕</button>
-      <h3 style="margin-top:0;">Вход в администрацията</h3>
-      <p class="hint">Достъпът е ограничен — въведи потребител и парола.</p>
-      <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username"></div>
-      <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password"></div>
-      <p id="alError" class="hint" style="color:#c0392b; display:none;">Грешен потребител или парола.</p>
-      <div class="form-actions"><button class="btn btn-primary" id="alSubmit" style="width:100%;">Влез</button></div>
-    </div>
-  </div>
-
   <!-- product modal -->
   <div class="overlay" id="productOverlay">
     <div class="modal" role="dialog" aria-modal="true">
@@ -1370,6 +1357,19 @@ body.admin-mode .chat-fab{display:none;}
         <button class="btn btn-ghost btn-sm" id="quizRestart" style="margin-top:16px;">Започни отначало</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- вход в администрацията (само на /admin или #admin — няма видима връзка към него в сайта); нарочно извън #storeApp, за да не се скрива заедно с витрината, докато витрината е скрита в admin-mode -->
+<div class="overlay" id="adminLoginOverlay">
+  <div class="modal" role="dialog" aria-modal="true" style="max-width:380px;">
+    <button class="modal-close" id="closeAdminLogin" aria-label="Затвори">✕</button>
+    <h3 style="margin-top:0;">Вход в администрацията</h3>
+    <p class="hint">Достъпът е ограничен — въведи потребител и парола.</p>
+    <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username"></div>
+    <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password"></div>
+    <p id="alError" class="hint" style="color:#c0392b; display:none;">Грешен потребител или парола.</p>
+    <div class="form-actions"><button class="btn btn-primary" id="alSubmit" style="width:100%;">Влез</button></div>
   </div>
 </div>
 
