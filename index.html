@@ -633,7 +633,19 @@ table.data th.num{text-align:right;}
 .item-card{background:var(--surface); border:1.5px solid var(--line); border-radius:var(--radius-s); padding:14px; display:flex; flex-direction:column; gap:12px; transition:border-color .15s ease, transform .15s ease;}
 .item-card:hover{transform:translateY(-2px);}
 .item-card.on{border-color:var(--primary); background:var(--gold-soft);}
+.item-card.has-photo{padding:0; overflow:hidden; gap:0;}
+.ic-photo{width:100%; aspect-ratio:4/3; background:var(--surface-alt); overflow:hidden; position:relative;}
+.ic-photo img{width:100%; height:100%; object-fit:cover; display:block;}
+.item-card.has-photo .ic-top{padding:12px 14px 0;}
+.item-card.has-photo .ic-foot{padding:12px 14px 14px;}
 .ic-top{display:flex; gap:11px; align-items:flex-start;}
+.builder-search{position:relative; margin-bottom:14px;}
+.builder-search input{width:100%; border:1.5px solid var(--line); background:var(--surface); color:var(--ink); border-radius:999px; padding:13px 44px 13px 44px; font-family:inherit; font-size:1rem;}
+.builder-search input::-webkit-search-cancel-button,.builder-search input::-webkit-search-decoration{-webkit-appearance:none; display:none;}
+.builder-search input:focus{outline:none; border-color:var(--primary);}
+.builder-search .bs-ico{position:absolute; left:16px; top:50%; transform:translateY(-50%); font-size:1.05rem; pointer-events:none; opacity:.7;}
+.builder-search .bs-clear{position:absolute; right:10px; top:50%; transform:translateY(-50%); border:none; background:var(--surface-alt); color:var(--ink-soft); width:28px; height:28px; border-radius:50%; cursor:pointer; font-size:.85rem; display:none;}
+.builder-search.has-q .bs-clear{display:block;}
 .ic-emoji{font-size:1.4rem; flex-shrink:0; line-height:1.2;}
 .ic-name{min-width:0;}
 .ic-name b{display:block; font-size:.88rem; font-weight:700; line-height:1.32;}
@@ -1257,6 +1269,11 @@ body.admin-mode .chat-fab{display:none;}
 
     <div class="build-cols">
       <div>
+        <div class="builder-search" id="builderSearchWrap">
+          <span class="bs-ico">🔍</span>
+          <input type="search" id="builderSearch" placeholder="Търси артикул — напр. „шок“ за шоколад…" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Търси артикул">
+          <button type="button" class="bs-clear" id="builderSearchClear" aria-label="Изчисти търсенето">✕</button>
+        </div>
         <div class="sub-tabs" id="builderTabs"></div>
         <p class="bs-hint" id="builderSourceNote" style="margin-left:0;"></p>
         <div class="item-grid" id="builderPicker"></div>
@@ -4614,6 +4631,35 @@ function renderProductVideo(url){
 let boxPick = {};          // {itemId: qty}
 let builderCat = 'all';    // активна категория артикули
 let builderSource = null;  // id на готова кутия, ако гледаме нейните артикули
+let builderQuery = '';     // текст от търсачката
+
+/* Търсене: думите от заявката се сверяват с НАЧАЛОТО на думите в името
+   („шок“ → шоколад), а ако няма такива — и с произволна част от името. */
+function normSearch(t){
+  return String(t||'').toLowerCase().replace(/ё/g,'е').replace(/[„“”"'’‘.,;:!?()\-–—/]/g,' ').replace(/\s+/g,' ').trim();
+}
+function searchBuilderItems(q){
+  const toks = normSearch(q).split(' ').filter(Boolean);
+  if(!toks.length) return null;
+  const scored = [];
+  activeItems().forEach(it=>{
+    const cat = itemCatById(it.cat);
+    const hay = normSearch([it.name, it.unit, cat&&cat.name].join(' '));
+    const words = hay.split(' ');
+    let score = 0, ok = true;
+    for(const t of toks){
+      if(words.some(w=>w.startsWith(t))) score += 2;          // начало на дума
+      else if(hay.includes(t)) score += 1;                     // част от дума
+      else { ok = false; break; }
+    }
+    if(ok){
+      const nameWords = normSearch(it.name).split(' ');
+      const inName = toks.every(t=>nameWords.some(w=>w.startsWith(t)));
+      scored.push({it, score: score + (inName?3:0)});
+    }
+  });
+  return scored.sort((a,b)=>b.score-a.score).map(x=>x.it);
+}
 
 function boxPickList(){
   return Object.entries(boxPick)
@@ -4641,16 +4687,17 @@ function renderBuilderTabs(){
     boxes.map(b=>`<button data-bbox="${esc(b.id)}" class="${builderSource===b.id?'on':''}">📦 от „${esc(b.name)}“</button>`).join('');
 
   el.querySelectorAll('[data-bcat]').forEach(b=>b.addEventListener('click', ()=>{
-    builderCat = b.dataset.bcat; builderSource = null;
+    builderCat = b.dataset.bcat; builderSource = null; clearBuilderSearch();
     renderBuilderTabs(); renderBuilderPicker();
   }));
   el.querySelectorAll('[data-bbox]').forEach(b=>b.addEventListener('click', ()=>{
-    builderSource = b.dataset.bbox; builderCat = 'all';
+    builderSource = b.dataset.bbox; builderCat = 'all'; clearBuilderSearch();
     renderBuilderTabs(); renderBuilderPicker();
   }));
 }
 
 function builderVisibleItems(){
+  if(builderQuery.trim()){ const r = searchBuilderItems(builderQuery); if(r) return r; }
   if(builderSource){
     const box = prodById(builderSource);
     return (box.recipe||[]).map(r=>itemById(r.id)).filter(Boolean).filter(i=>i.active!==false);
@@ -4663,12 +4710,15 @@ function renderBuilderPicker(){
   const el = $('#builderPicker');
   const srcBox = builderSource ? prodById(builderSource) : null;
 
-  $('#builderSourceNote').innerHTML = srcBox
+  const searching = !!builderQuery.trim();
+  $('#builderSourceNote').innerHTML = searching
+    ? `Резултати за „${esc(builderQuery.trim())}“: ${items.length} ${items.length===1?'артикул':'артикула'}.`
+    : srcBox
     ? `Артикулите от „${esc(srcBox.name)}“. Вземи само каквото ти трябва — например само пурите.
        <button class="mini-btn" id="takeWholeBox" style="margin-left:8px;">Вземи всичко от тази кутия</button>`
     : 'Избери каквото ти хареса. Броят се променя със стрелките.';
 
-  if(srcBox){
+  if(srcBox && !searching){
     const t = $('#takeWholeBox');
     if(t) t.addEventListener('click', ()=>{
       (srcBox.recipe||[]).forEach(r=>{ boxPick[r.id] = (boxPick[r.id]||0) + r.q; });
@@ -4678,16 +4728,19 @@ function renderBuilderPicker(){
   }
 
   if(!items.length){
-    el.innerHTML = '<p style="color:var(--ink-soft); padding:20px 0;">В тази категория още няма артикули.</p>';
+    el.innerHTML = searching
+      ? '<p style="color:var(--ink-soft); padding:20px 0;">Няма артикул, който да отговаря на търсенето. Опитай с по-малко букви или друга дума.</p>'
+      : '<p style="color:var(--ink-soft); padding:20px 0;">В тази категория още няма артикули.</p>';
     return;
   }
   el.innerHTML = items.map(it=>{
     const q = boxPick[it.id]||0;
     const cat = itemCatById(it.cat);
     return `
-    <div class="item-card ${q?'on':''}">
+    <div class="item-card ${q?'on':''} ${it.image?'has-photo':''}">
+      ${it.image ? `<div class="ic-photo"><img src="${esc(it.image)}" alt="${esc(it.name)}" loading="lazy"></div>` : ''}
       <div class="ic-top">
-        <span class="ic-emoji">${cat?cat.icon:'🎁'}</span>
+        ${it.image ? '' : `<span class="ic-emoji">${cat?cat.icon:'🎁'}</span>`}
         <div class="ic-name"><b>${esc(it.name)}</b><span>${esc(it.unit||'')}</span></div>
       </div>
       <div class="ic-foot">
@@ -4707,7 +4760,27 @@ function renderBuilderPicker(){
   el.querySelectorAll('[data-dec-item]').forEach(b=>b.addEventListener('click', ()=>setPick(b.dataset.decItem, (boxPick[b.dataset.decItem]||0)-1)));
 }
 
+function clearBuilderSearch(){
+  builderQuery = '';
+  const i = $('#builderSearch'); if(i) i.value = '';
+  const w = $('#builderSearchWrap'); if(w) w.classList.remove('has-q');
+}
+let builderSearchWired = false;
+function wireBuilderSearch(){
+  if(builderSearchWired) return;
+  const inp = $('#builderSearch'), wrap = $('#builderSearchWrap'), clr = $('#builderSearchClear');
+  if(!inp) return;
+  builderSearchWired = true;
+  const apply = ()=>{
+    builderQuery = inp.value;
+    wrap.classList.toggle('has-q', !!inp.value);
+    renderBuilderPicker();
+  };
+  inp.addEventListener('input', apply);
+  clr.addEventListener('click', ()=>{ inp.value=''; apply(); inp.focus(); });
+}
 function renderBuilder(){
+  wireBuilderSearch();
   renderBuilderTabs();
   renderBuilderPicker();
   updateBoxSummary();
