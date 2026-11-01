@@ -1404,7 +1404,7 @@ body.admin-mode .chat-fab{display:none;}
     <h3 style="margin-top:0;">Вход в администрацията</h3>
     <p class="hint">Достъпът е ограничен — въведи потребител и парола.</p>
     <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
-    <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password"></div>
+    <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
     <p id="alError" class="hint" style="color:#c0392b; display:none;">Грешен потребител или парола.</p>
     <div class="form-actions"><button class="btn btn-primary" id="alSubmit" style="width:100%;">Влез</button></div>
   </div>
@@ -3501,7 +3501,8 @@ async function verifyAdminPasswordOnServer(pass){
   const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
   if(!base) return null; // няма как да проверим — да минем на резервния локален вариант
   try{
-    const r = await fetch(base + '/admin/check', { headers: {'X-Admin-Token': pass} });
+    const ac = new AbortController(); const to = setTimeout(()=>ac.abort(), 60000);
+    let r; try{ r = await fetch(base + '/admin/check', { headers: {'X-Admin-Token': pass}, signal: ac.signal }); } finally { clearTimeout(to); }
     if(r.status === 200) return true;
     if(r.status === 401) return false;
     return null; // сървърът не е конфигуриран или временен проблем
@@ -3510,25 +3511,37 @@ async function verifyAdminPasswordOnServer(pass){
 function wireAdminLogin(){
   const overlay = $('#adminLoginOverlay');
   if(!overlay) return;
+  let busy = false;
   const doLogin = async ()=>{
-    const user = $('#alUser').value.trim();
-    const pass = $('#alPass').value;
+    if(busy) return;
+    const btn = $('#alSubmit');
     const errEl = $('#alError');
+    const showErr = (msg)=>{ errEl.textContent = msg; errEl.style.display=''; };
+    const user = $('#alUser').value.trim();
+    const pass = $('#alPass').value.trim();
     errEl.style.display = 'none';
-    if(user.toLowerCase() !== ADMIN_LOGIN_USER.toLowerCase()){ errEl.style.display=''; return; }
-    const remote = await verifyAdminPasswordOnServer(pass);
-    if(remote === false){ errEl.style.display=''; return; }
-    if(remote === null){
-      // няма връзка със сървъра — пускаме само по потребител, за да
-      // не остане администраторът напълно без достъп при проблем
-      if(!pass){ errEl.style.display=''; return; }
+    if(!user){ showErr('Въведи потребител.'); return; }
+    if(!pass){ showErr('Въведи парола.'); return; }
+    if(user.toLowerCase() !== ADMIN_LOGIN_USER.toLowerCase()){ showErr('Грешен потребител. Провери за интервал или грешна буква.'); return; }
+    busy = true; btn.disabled = true; btn.textContent = 'Влизам…';
+    const slow = setTimeout(()=>{ showErr('Сървърът се събужда след почивка — изчакай до минута, не затваряй страницата…'); errEl.style.color='#8a6d3b'; }, 4000);
+    try{
+      const remote = await verifyAdminPasswordOnServer(pass);
+      clearTimeout(slow); errEl.style.color='#c0392b';
+      if(remote === false){ showErr('Грешна парола. Провери дали Caps Lock не е включен.'); return; }
+      errEl.style.display = 'none';
+      // remote === null → няма връзка със сървъра; пускаме с правилния потребител,
+      // за да не остане администраторът без достъп при проблем
+      try{ sessionStorage.setItem('lpl_admin_unlocked', '1'); }catch(e){}
+      try{ STORE.settings.adminToken = pass; persist(); }catch(e){ console.error(e); }
+      $('#alUser').value=''; $('#alPass').value='';
+      overlay.classList.remove('open');
+      try{ renderAdmin(); }catch(e){ console.error(e); }
+      adminReady = true; window.scrollTo(0,0);
+      try{ maybeInitialPush(); }catch(e){ console.error(e); }
+    }finally{
+      clearTimeout(slow); busy = false; btn.disabled = false; btn.textContent = 'Влез';
     }
-    try{ sessionStorage.setItem('lpl_admin_unlocked', '1'); }catch(e){}
-    STORE.settings.adminToken = pass; persist();
-    $('#alUser').value=''; $('#alPass').value='';
-    overlay.classList.remove('open');
-    renderAdmin(); adminReady = true; window.scrollTo(0,0);
-    maybeInitialPush();
   };
   $('#alSubmit').addEventListener('click', doLogin);
   $('#alPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
