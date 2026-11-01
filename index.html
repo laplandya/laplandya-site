@@ -243,6 +243,17 @@ footer{padding:56px 0 28px; border-top:1px solid var(--line);}
 .pm-grid{display:grid; grid-template-columns:1fr 1fr;}
 @media (max-width:640px){ .pm-grid{grid-template-columns:1fr;} }
 .pm-grid img{width:100%; height:100%; object-fit:cover; min-height:260px;}
+/* Основната снимка в прозореца на продукта: показва се ЦЯЛАТА (без
+   изрязване), в собствените си пропорции, и остава видима (sticky),
+   докато се скролва описанието вдясно. Преди се разтягаше до височината
+   на целия текст и се изрязваше — изглеждаше много „зуумната“. */
+#pmImg{height:auto; min-height:0; max-height:88vh; object-fit:contain; align-self:start; position:sticky; top:0; background:var(--surface-alt); display:block;}
+@media (min-width:641px){
+  /* лявата половина е в мек фон, а снимката стои центрирана в нея */
+  .pm-grid{background:linear-gradient(90deg, var(--surface-alt) 50%, transparent 50%);}
+  #pmImg{height:88vh;}
+}
+@media (max-width:640px){ #pmImg{position:static; max-height:62vh;} }
 .pm-info{padding:32px; display:flex; flex-direction:column; gap:14px;}
 .pm-info h3{font-size:1.6rem;}
 .pm-info .price{font-size:1.3rem; color:var(--primary);}
