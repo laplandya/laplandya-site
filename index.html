@@ -447,6 +447,16 @@ table.data th.num{text-align:right;}
 .msg-top time{font-size:.74rem; color:var(--ink-soft);}
 .msg p{font-size:.9rem; white-space:pre-wrap; word-break:break-word;}
 .msg-actions{display:flex; gap:8px; margin-top:10px;}
+.aic-q{max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.aic-head{display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:14px;}
+.aic-head p{font-size:.84rem; color:var(--ink-soft); margin-top:4px;}
+.aic-log{display:flex; flex-direction:column; gap:10px; max-height:560px; overflow-y:auto; padding:4px 2px 4px 0;}
+.aic-log .msg-row{max-width:80%;}
+.aic-log time{display:block; font-size:.68rem; opacity:.7; margin-top:4px;}
+.aic-sug{background:var(--surface-alt); border-radius:var(--radius-s); padding:12px 14px; margin-top:10px; border-left:3px solid var(--gold);}
+.aic-sug ul{list-style:none; margin:8px 0 0; padding:0; font-size:.86rem;}
+.aic-sug li{display:flex; justify-content:space-between; gap:10px; padding:3px 0;}
+.aic-sug .why{font-size:.82rem; color:var(--ink-soft); margin-top:4px;}
 
 .status-select{border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:.8rem; font-weight:600; font-family:inherit; cursor:pointer;}
 .order-detail{background:var(--surface-alt); border-radius:var(--radius-s); padding:16px; margin-top:10px; font-size:.86rem;}
@@ -1401,6 +1411,7 @@ body.admin-mode .chat-fab{display:none;}
       <button class="admin-nav-btn" data-panel="vouchers"><span class="ic">🎟️</span>Ваучери<span class="pill" id="navVoucherCount">0</span></button>
       <button class="admin-nav-btn" data-panel="builder"><span class="ic">🧩</span>Конфигуратор</button>
       <button class="admin-nav-btn" data-panel="messages"><span class="ic">💬</span>Съобщения<span class="pill" id="navMsgCount">0</span></button>
+      <button class="admin-nav-btn" data-panel="aichats"><span class="ic">🤖</span>Разговори с AI<span class="pill" id="navAiChatCount">0</span></button>
       <button class="admin-nav-btn" data-panel="settings"><span class="ic">⚙️</span>Настройки</button>
       <div class="admin-side-foot">
         <div class="save-state"><span class="save-dot" id="saveDot"></span><span id="saveText">Запазено</span></div>
@@ -1738,6 +1749,23 @@ body.admin-mode .chat-fab{display:none;}
           <p class="hint">Отметнатите падат най-отдолу и избледняват.</p>
           <div class="msg-list" id="msgList"></div>
         </div>
+      </section>
+
+      <!-- AI CHATS -->
+      <section class="admin-panel" data-panel="aichats">
+        <div class="admin-head">
+          <div><h1>Разговори с асистента</h1><p>Какво питат клиентите помощника за подаръци и какво им предлага той.</p></div>
+          <button class="btn btn-ghost btn-sm" id="refreshAiChats">Обнови</button>
+        </div>
+        <div class="panel-card" id="aiChatListCard">
+          <div class="table-scroll">
+            <table class="data">
+              <thead><tr><th>Последно</th><th>Клиент</th><th>Първи въпрос</th><th class="num">Съобщ.</th><th class="num">Предлож.</th><th></th></tr></thead>
+              <tbody id="aiChatRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel-card hidden" id="aiChatDetail"></div>
       </section>
 
       <!-- SETTINGS -->
@@ -3742,6 +3770,116 @@ function renderMessages(){
   }));
 }
 
+/* ---------- Разговори с AI помощника (архив) ----------
+   Пазят се само на сървъра (таблица ai_chats) — тук само ги
+   четем. Нужни са адресът на сървъра и админ паролата. */
+let aiChatsCache = [];
+const AI_MODE_LABEL = {model:'AI модел', offline:'Вграден (офлайн)', mixed:'AI + вграден'};
+function aiChatAuth(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  const token = (STORE.settings && STORE.settings.adminToken) || '';
+  return {base, token};
+}
+function aiChatWho(c){
+  if(!c.customer) return '<span style="color:var(--ink-soft);">Гост</span>';
+  return `<b>${esc(c.customer.name || 'Клиент')}</b>${c.customer.email ? `<br><span style="font-size:.78rem; color:var(--ink-soft);">${esc(c.customer.email)}</span>` : ''}`;
+}
+async function syncAiChatsFromServer(){
+  const {base, token} = aiChatAuth();
+  const tb = $('#aiChatRows');
+  if(!base || !token){
+    tb.innerHTML = '<tr><td colspan="6" style="color:var(--ink-soft);">Няма връзка със сървъра — провери адреса на помощника и админ паролата в Настройки.</td></tr>';
+    return;
+  }
+  tb.innerHTML = '<tr><td colspan="6" style="color:var(--ink-soft);">Зареждам…</td></tr>';
+  try{
+    const r = await fetch(base + '/ai-chats', { headers: {'X-Admin-Token': token} });
+    if(!r.ok) throw new Error('status ' + r.status);
+    const data = await r.json();
+    aiChatsCache = data.chats || [];
+    renderAiChatList();
+  }catch(e){
+    tb.innerHTML = '<tr><td colspan="6" style="color:var(--ink-soft);">Не успях да заредя разговорите. Сървърът може да се събужда — опитай „Обнови“ след малко.</td></tr>';
+  }
+}
+function renderAiChatList(){
+  $('#navAiChatCount').textContent = aiChatsCache.length;
+  $('#aiChatDetail').classList.add('hidden');
+  $('#aiChatListCard').classList.remove('hidden');
+  const tb = $('#aiChatRows');
+  if(!aiChatsCache.length){
+    tb.innerHTML = '<tr><td colspan="6" style="color:var(--ink-soft);">Още няма записани разговори.</td></tr>';
+    return;
+  }
+  tb.innerHTML = aiChatsCache.map(c=>`
+    <tr>
+      <td style="white-space:nowrap;">${dateTimeFmt(c.updatedAt)}<br><span style="font-size:.74rem; color:var(--ink-soft);">${esc(AI_MODE_LABEL[c.mode]||'')}</span></td>
+      <td>${aiChatWho(c)}</td>
+      <td><div class="aic-q" title="${esc(c.firstQuestion)}">${esc(c.firstQuestion || '—')}</div></td>
+      <td class="num">${c.msgCount}</td>
+      <td class="num">${c.sugCount}</td>
+      <td style="white-space:nowrap; text-align:right;">
+        <button class="mini-btn" data-viewaic="${esc(c.id)}">Виж</button>
+        <button class="mini-btn danger" data-delaic="${esc(c.id)}">Изтрий</button>
+      </td>
+    </tr>`).join('');
+  $$('#aiChatRows [data-viewaic]').forEach(b=>b.addEventListener('click', ()=>openAiChat(b.dataset.viewaic)));
+  $$('#aiChatRows [data-delaic]').forEach(b=>b.addEventListener('click', ()=>deleteAiChat(b.dataset.delaic)));
+}
+async function openAiChat(id){
+  const {base, token} = aiChatAuth();
+  if(!base || !token) return;
+  const box = $('#aiChatDetail');
+  try{
+    const r = await fetch(base + '/ai-chats/' + encodeURIComponent(id), { headers: {'X-Admin-Token': token} });
+    if(!r.ok) throw new Error('status ' + r.status);
+    const c = (await r.json()).chat;
+    const tm = ts => ts ? `<time>${dateTimeFmt(ts)}</time>` : '';
+    const log = (c.messages||[]).map(m=>`
+      <div class="msg-row ${m.role==='user'?'me':''}"><div class="bubble">${esc(m.content)}${tm(m.at)}</div></div>`).join('');
+    const sugs = (c.suggestions||[]).map((s,i)=>`
+      <div class="aic-sug">
+        <b>Предложение ${i+1}</b>${s.at ? ` <span style="font-size:.74rem; color:var(--ink-soft);">· ${dateTimeFmt(s.at)}</span>` : ''}
+        ${s.reason ? `<p class="why">${esc(s.reason)}</p>` : ''}
+        <ul>
+          ${(s.items||[]).map(it=>`<li><span>${esc(it.name || it.id)}${it.q>1?` × ${it.q}`:''}</span><span>${fmt(it.price)}</span></li>`).join('')}
+          <li style="font-weight:800; border-top:1px solid var(--line); margin-top:4px; padding-top:6px;"><span>Общо с опаковане</span><span>${fmt(s.total)}</span></li>
+        </ul>
+      </div>`).join('');
+    box.innerHTML = `
+      <div class="aic-head">
+        <div>
+          <h3 style="margin:0;">Разговор от ${dateTimeFmt(c.startedAt)}</h3>
+          <p>${c.customer ? esc((c.customer.name||'Клиент') + (c.customer.email ? ' · ' + c.customer.email : '')) : 'Гост (без профил)'} · ${c.msgCount} съобщения${c.mode ? ' · ' + esc(AI_MODE_LABEL[c.mode]||c.mode) : ''}</p>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="mini-btn" id="aicBack">← Назад</button>
+          <button class="mini-btn danger" id="aicDel">Изтрий</button>
+        </div>
+      </div>
+      <div class="aic-log">${log || '<p style="color:var(--ink-soft);">Празен разговор.</p>'}</div>
+      ${sugs ? `<h3 style="margin:18px 0 0;">Предложени кутии</h3>${sugs}` : ''}`;
+    $('#aiChatListCard').classList.add('hidden');
+    box.classList.remove('hidden');
+    $('#aicBack').addEventListener('click', renderAiChatList);
+    $('#aicDel').addEventListener('click', ()=>deleteAiChat(c.id));
+    window.scrollTo(0,0);
+  }catch(e){
+    showToast('Не успях да отворя разговора');
+  }
+}
+async function deleteAiChat(id){
+  const {base, token} = aiChatAuth();
+  if(!base || !token) return;
+  try{
+    const r = await fetch(base + '/ai-chats/' + encodeURIComponent(id), { method:'DELETE', headers:{'X-Admin-Token': token} });
+    if(!r.ok) throw new Error('status ' + r.status);
+    aiChatsCache = aiChatsCache.filter(x=>x.id!==id);
+    renderAiChatList();
+    showToast('Разговорът е изтрит');
+  }catch(e){ showToast('Не успях да изтрия разговора'); }
+}
+
 /* ---------- Настройки ---------- */
 function fillSettings(){
   const s = STORE.settings;
@@ -4017,7 +4155,9 @@ function wireAdmin(){
     if(b.dataset.panel==='vouchers' && typeof syncVouchersFromServer==='function') syncVouchersFromServer();
     if(b.dataset.panel==='messages' && typeof syncMessagesFromServer==='function') syncMessagesFromServer();
     if(b.dataset.panel==='customers' && typeof syncCustomersFromServer==='function') syncCustomersFromServer();
+    if(b.dataset.panel==='aichats') syncAiChatsFromServer();
   }));
+  $('#refreshAiChats').addEventListener('click', syncAiChatsFromServer);
   if($('#syncOrders')) $('#syncOrders').addEventListener('click', ()=>{
     if(typeof syncOrdersFromServer==='function') syncOrdersFromServer();
   });
@@ -5030,8 +5170,47 @@ let chatBusy = false;
 let lastSuggestion = null;
 
 function resetGiftState(){
-  giftState = {recipient:null, occasion:null, budget:null, likes:[], avoid:[], asked:[], history:[], mustInclude:[]};
+  giftState = {recipient:null, occasion:null, budget:null, likes:[], avoid:[], asked:[], history:[], mustInclude:[],
+               chatId: newChatId(), suggestions: [], mode: ''};
   lastSuggestion = null;
+}
+
+/* ---------- Архив на разговорите ----------
+   След всеки отговор целият разговор се праща към сървъра
+   (POST /ai-chats) и се вижда в Админ → Разговори с AI.
+   chatId е случаен номер на този разговор — всеки следващ запис
+   обновява същия ред в базата, вместо да прави нов. */
+function newChatId(){
+  try{
+    const a = new Uint8Array(8); crypto.getRandomValues(a);
+    return 'c-' + Array.from(a, b=>b.toString(16).padStart(2,'0')).join('');
+  }catch(e){
+    return 'c-' + (Date.now().toString(16) + Math.random().toString(16).slice(2) + '0000000000000000').slice(0,16);
+  }
+}
+let chatArchiveTimer = null;
+function scheduleChatArchive(){
+  clearTimeout(chatArchiveTimer);
+  chatArchiveTimer = setTimeout(archiveChat, 600);
+}
+async function archiveChat(){
+  if(!giftState || !giftState.chatId) return;
+  if(!giftState.history.some(m=>m.role==='user')) return;
+  const base = aiServerBase();
+  if(!base) return;
+  const body = JSON.stringify({
+    chatId: giftState.chatId,
+    mode: giftState.mode || '',
+    messages: giftState.history,
+    suggestions: giftState.suggestions || []
+  });
+  try{
+    await fetch(base + '/ai-chats', {
+      method:'POST',
+      headers: Object.assign({'Content-Type':'application/json'}, customerAuthHeader()),
+      body, keepalive: body.length < 60000
+    });
+  }catch(e){ /* тихо — архивът не бива да пречи на разговора */ }
 }
 
 /* ---------- Речник за разпознаване ---------- */
@@ -5345,6 +5524,14 @@ function chatTyping(on){
 function renderSuggestion(sug){
   lastSuggestion = sug;
   const {calc} = sug;
+  if(giftState && giftState.suggestions){
+    giftState.suggestions.push({
+      at: Date.now(), total: calc.total,
+      reason: sug.reason || (typeof explainBasket==='function' ? explainBasket() : ''),
+      items: calc.lines.map(l=>({id:l.item.id, name:l.item.name, q:l.q, price:l.sale}))
+    });
+    scheduleChatArchive();
+  }
   const body = $('#chatBody');
   const el = document.createElement('div');
   el.className = 'chat-sug';
@@ -5391,7 +5578,7 @@ function renderSuggestion(sug){
   });
   el.querySelector('[data-sugother]').addEventListener('click', ()=>{
     const next = buildBasket((sug.variant||0) + 2);
-    if(next){ next.variant = (sug.variant||0)+2; chatAdd('bot','Ето друга посока:'); renderSuggestion(next); }
+    if(next){ next.variant = (sug.variant||0)+2; chatAdd('bot','Ето друга посока:'); if(giftState) giftState.history.push({role:'assistant', content:'Ето друга посока:', at:Date.now()}); renderSuggestion(next); }
     else chatAdd('bot','Нямам достатъчно различни артикули за втори вариант в този бюджет.');
   });
 }
@@ -5450,7 +5637,7 @@ async function askRemote(userText){
   const url = (aiCfg().endpoint||'').trim();
   if(!url) return null;
   const payload = {
-    messages: giftState.history.concat([{role:'user', content:userText}]),
+    messages: giftState.history.map(m=>({role:m.role, content:m.content})),
     state: {
       recipient: giftState.recipient ? giftState.recipient.id : null,
       occasion: giftState.occasion ? giftState.occasion.id : null,
@@ -5472,7 +5659,7 @@ async function sendChat(text){
   const msg = String(text||'').trim();
   if(!msg || chatBusy) return;
   chatAdd('me', esc(msg));
-  giftState.history.push({role:'user', content:msg});
+  giftState.history.push({role:'user', content:msg, at:Date.now()});
   $('#chatInput').value = '';
   autoGrow($('#chatInput'));
 
@@ -5487,12 +5674,12 @@ async function sendChat(text){
         if(r && (r.reply || r.suggestion)){
           chatTyping(false);
           if(r.state) Object.assign(giftState, r.state);
-          if(r.reply){ chatAdd('bot', esc(r.reply), r.chips); giftState.history.push({role:'assistant', content:r.reply}); }
+          if(r.reply){ chatAdd('bot', esc(r.reply), r.chips); giftState.history.push({role:'assistant', content:r.reply, at:Date.now()}); giftState.mode = 'model'; }
           if(r.suggestion && Array.isArray(r.suggestion.items)){
             const recipe = r.suggestion.items
               .map(i=>({id:i.id, q:Math.max(1, Number(i.q)||1)}))
               .filter(i=>itemById(i.id));
-            if(recipe.length) renderSuggestion({recipe, calc: priceRecipe(recipe), variant:0});
+            if(recipe.length){ giftState.mode = 'model'; renderSuggestion({recipe, calc: priceRecipe(recipe), variant:0, reason: r.suggestion.reason||''}); }
           }
           return;
         }
@@ -5502,6 +5689,7 @@ async function sendChat(text){
     }
 
     // 2) вграден режим
+    giftState.mode = (giftState.mode==='model' || giftState.mode==='mixed') ? 'mixed' : 'offline';
     parseMessage(msg);
     await new Promise(r=>setTimeout(r, 420));
     chatTyping(false);
@@ -5511,14 +5699,16 @@ async function sendChat(text){
 
     if(q){
       chatAdd('bot', esc(q.text), q.chips);
-      giftState.history.push({role:'assistant', content:q.text});
+      giftState.history.push({role:'assistant', content:q.text, at:Date.now()});
       return;
     }
 
     if(giftState.budget == null) giftState.budget = 60;
     const sug = buildBasket(0);
     if(!sug){
-      chatAdd('bot','С този бюджет не мога да сглобя кутия. Опитай с малко по-висока сума — най-малката кутия започва от около 20 €.');
+      const low = 'С този бюджет не мога да сглобя кутия. Опитай с малко по-висока сума — най-малката кутия започва от около 20 €.';
+      chatAdd('bot', low);
+      giftState.history.push({role:'assistant', content:low, at:Date.now()});
       return;
     }
     sug.variant = 0;
@@ -5526,13 +5716,14 @@ async function sendChat(text){
       ? `Ето какво бих подарил в рамките на ${fmt(giftState.budget)}:`
       : 'Ето какво бих подарил:';
     chatAdd('bot', esc(intro));
-    giftState.history.push({role:'assistant', content:intro});
+    giftState.history.push({role:'assistant', content:intro, at:Date.now()});
     renderSuggestion(sug);
 
   } finally {
     chatTyping(false);
     chatBusy = false; $('#chatSend').disabled = false;
     $('#chatInput').focus();
+    scheduleChatArchive();
   }
 }
 
@@ -5552,9 +5743,7 @@ function openChat(){
     chatAdd('bot', esc(greet), ['Подарък за жена','Подарък за мъж','За бебе','Нещо забавно']);
   }
   $('#chatStatus').textContent = (aiCfg().endpoint||'').trim() ? 'Свързан модел' : 'Онлайн';
-  $('#chatNote').textContent = (aiCfg().endpoint||'').trim()
-    ? 'Разговорът минава през вашия сървър.'
-    : 'Предложенията се смятат от каталога на магазина.';
+  $('#chatNote').textContent = 'Разговорите се записват, за да подобряваме предложенията.';
   setTimeout(()=>$('#chatInput').focus(), 250);
 }
 function closeChat(){
