@@ -1421,7 +1421,12 @@ body.admin-mode .chat-fab{display:none;}
     <h3 style="margin-top:0;">Вход в администрацията</h3>
     <p class="hint">Достъпът е ограничен — въведи потребител и парола.</p>
     <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
-    <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
+    <div class="field"><label for="alPass">Парола</label>
+          <div style="position:relative;">
+            <input id="alPass" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" style="padding-right:78px;">
+            <button type="button" id="alShow" style="position:absolute; right:6px; top:50%; transform:translateY(-50%); border:none; background:var(--surface-alt); color:var(--ink-soft); font-weight:700; font-size:.78rem; padding:7px 11px; border-radius:999px; cursor:pointer;">покажи</button>
+          </div>
+        </div>
     <p id="alError" class="hint" style="color:#c0392b; display:none;">Грешен потребител или парола.</p>
     <div class="form-actions"><button class="btn btn-primary" id="alSubmit" style="width:100%;">Влез</button></div>
   </div>
@@ -3540,6 +3545,7 @@ window.addEventListener('hashchange', applyRoute);
    истинската парола никога не се пази в кода на сайта. */
 async function verifyAdminPasswordOnServer(pass){
   const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(/[^\u0020-\u00FF]/.test(pass)) return false; // знаци извън латиница не могат да са в паролата (и браузърът не ги праща в заглавие)
   if(!base) return null; // няма как да проверим — да минем на резервния локален вариант
   try{
     const ac = new AbortController(); const to = setTimeout(()=>ac.abort(), 60000);
@@ -3563,13 +3569,24 @@ function wireAdminLogin(){
     errEl.style.display = 'none';
     if(!user){ showErr('Въведи потребител.'); return; }
     if(!pass){ showErr('Въведи парола.'); return; }
-    if(user.toLowerCase() !== ADMIN_LOGIN_USER.toLowerCase()){ showErr('Грешен потребител. Провери за интервал или грешна буква.'); return; }
+    const CYR = /[\u0400-\u04FF]/;
+    if(user.toLowerCase() !== ADMIN_LOGIN_USER.toLowerCase()){
+      showErr(CYR.test(user)
+        ? 'Потребителят е написан с КИРИЛИЦА. Превключи клавиатурата на латиница (английски) и опитай пак.'
+        : 'Грешен потребител. Провери за интервал или грешна буква.');
+      return;
+    }
     busy = true; btn.disabled = true; btn.textContent = 'Влизам…';
     const slow = setTimeout(()=>{ showErr('Сървърът се събужда след почивка — изчакай до минута, не затваряй страницата…'); errEl.style.color='#8a6d3b'; }, 4000);
     try{
       const remote = await verifyAdminPasswordOnServer(pass);
       clearTimeout(slow); errEl.style.color='#c0392b';
-      if(remote === false){ showErr('Грешна парола. Провери дали Caps Lock не е включен.'); return; }
+      if(remote === false){
+        showErr(CYR.test(pass)
+          ? 'Паролата е написана с КИРИЛИЦА. Превключи клавиатурата на латиница (английски) и опитай пак.'
+          : 'Грешна парола. Натисни „покажи“ до паролата, за да видиш какво е написано, и провери за Caps Lock.');
+        return;
+      }
       errEl.style.display = 'none';
       // remote === null → няма връзка със сървъра; пускаме с правилния потребител,
       // за да не остане администраторът без достъп при проблем
@@ -3585,6 +3602,11 @@ function wireAdminLogin(){
     }
   };
   $('#alSubmit').addEventListener('click', doLogin);
+  $('#alShow').addEventListener('click', ()=>{
+    const i = $('#alPass'), show = i.type === 'password';
+    i.type = show ? 'text' : 'password';
+    $('#alShow').textContent = show ? 'скрий' : 'покажи';
+  });
   $('#alPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
   $('#alUser').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
   $('#closeAdminLogin').addEventListener('click', ()=>{
