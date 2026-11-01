@@ -1579,7 +1579,9 @@ body.admin-mode .chat-fab{display:none;}
           <p class="hint">Покупната цена не се вижда никъде от клиента — служи само за сметките ви.</p>
           <div class="form-grid">
             <div class="field"><label for="ifName">Име*</label><input id="ifName" placeholder="Напр. Шоколад Lindt Traube-Nuss"></div>
-            <div class="field"><label for="ifUnit">Мярка / количество</label><input id="ifUnit" placeholder="Напр. 100 г"></div>
+            <div class="field"><label for="ifQty">Количество</label><input id="ifQty" inputmode="decimal" autocomplete="off" placeholder="Напр. 250"></div>
+            <div class="field"><label for="ifUom">Мерна единица</label><select id="ifUom"></select></div>
+            <p class="hint" id="ifLabelPreview" style="grid-column:1/-1; margin:-4px 0 4px;"></p>
             <div class="field"><label for="ifCost">Покупна цена (€)*</label><input id="ifCost" type="number" min="0" step="0.01" placeholder="2.20"></div>
             <div class="field"><label for="ifSale">Клиентска цена (€)*</label><input id="ifSale" type="number" min="0" step="0.01" placeholder="4.00"></div>
             <div class="field"><label for="ifCat">Категория</label><select id="ifCat"></select></div>
@@ -2065,6 +2067,30 @@ function seedBoxRecipes(){
    ЦЕНООБРАЗУВАНЕ
    ============================================================ */
 const itemById = id => (STORE.items||[]).find(x=>x.id===id);
+
+/* Мерни единици на артикулите: количество + единица → it.unit („250 гр.“).
+   itemLabel() е пълното име за клиента: „Уиски Jack Daniel's 250 гр.“
+   (мярката не се добавя втори път, ако вече е написана в името). */
+const UOM_LIST = ['бр.','гр.','кг','мл','л','см','м','оп.','комплект'];
+const UOM_ALIAS = {'г':'гр.','гр':'гр.','гр.':'гр.','g':'гр.','бр':'бр.','бр.':'бр.','кг':'кг','kg':'кг','мл':'мл','ml':'мл','л':'л','l':'л','см':'см','м':'м','оп':'оп.','оп.':'оп.'};
+function parseUnit(u){
+  const m = String(u||'').trim().match(/^(\d[\d.,]*(?:\s*[xх×]\s*\d[\d.,]*)?)\s*(.*)$/i);
+  if(!m) return {qty:'', uom:String(u||'').trim()};
+  const raw = m[2].trim();
+  return {qty:m[1].replace(/\s+/g,''), uom: UOM_ALIAS[raw.toLowerCase()] || raw};
+}
+function unitText(it){
+  if(it.qty!==undefined && it.qty!=='' || it.uom){
+    return [String(it.qty||'').trim(), it.uom||''].filter(Boolean).join(' ');
+  }
+  return String(it.unit||'').trim();
+}
+function itemLabel(it){
+  const u = unitText(it);
+  if(!u) return it.name;
+  const n = t=>String(t).toLowerCase().replace(/[\s.]/g,'').replace(/гр/g,'г').replace(/ml/g,'мл');
+  return n(it.name).includes(n(u)) ? it.name : it.name + ' ' + u;
+}
 const activeItems = () => (STORE.items||[]).filter(x=>x.active!==false);
 const itemsInCat = cat => activeItems().filter(x=>x.cat===cat);
 
@@ -2946,9 +2972,7 @@ function openProduct(id){
     const calc = priceRecipe(recipe);
     $('#pmContents').innerHTML = calc.lines.map(l=>`
       <li>
-        <span class="cn">${esc(l.item.name)}${l.q>1?` × ${l.q}`:''}
-          ${l.item.unit?`<span style="color:var(--ink-soft); font-weight:400;"> · ${esc(l.item.unit)}</span>`:''}
-        </span>
+        <span class="cn">${esc(itemLabel(l.item))}${l.q>1?` × ${l.q}`:''}</span>
         <span class="cb" style="display:flex; align-items:center; gap:8px;">
           ${fmt(l.sale)}
           <button class="mini-btn" data-takeitem="${esc(l.item.id)}" title="Сложи този артикул в своя кутия">Вземи само това</button>
@@ -4741,7 +4765,7 @@ function renderBuilderPicker(){
       ${it.image ? `<div class="ic-photo"><img src="${esc(it.image)}" alt="${esc(it.name)}" loading="lazy"></div>` : ''}
       <div class="ic-top">
         ${it.image ? '' : `<span class="ic-emoji">${cat?cat.icon:'🎁'}</span>`}
-        <div class="ic-name"><b>${esc(it.name)}</b><span>${esc(it.unit||'')}</span></div>
+        <div class="ic-name"><b>${esc(itemLabel(it))}</b></div>
       </div>
       <div class="ic-foot">
         <span class="ic-price">${fmt(it.sale)}</span>
@@ -4804,7 +4828,7 @@ function updateBoxSummary(){
     list.innerHTML = '<p style="color:var(--ink-soft); font-size:.88rem;">Тук ще се появи всичко, което избереш.</p>';
   } else {
     list.innerHTML = c.lines.map(l=>`
-      <li><span class="cn">${esc(l.item.name)} × ${l.q}</span><span class="cb">${fmt(l.sale)}</span></li>`).join('')
+      <li><span class="cn">${esc(itemLabel(l.item))} × ${l.q}</span><span class="cb">${fmt(l.sale)}</span></li>`).join('')
       + `<li><span class="cn">${esc(c.pack.name)}, опаковане и картичка</span><span class="cb">${fmt(c.pack.price)}</span></li>`
       + (c.pct ? `<li style="color:var(--sage);"><span class="cn">Отстъпка за ${c.count} артикула</span><span class="cb">− ${fmt(c.discount)}</span></li>` : '');
   }
@@ -4836,7 +4860,7 @@ function addBoxToCart(){
     priceMode: 'fixed',
     recipe: boxPickList(),
     cats: [], tags:['Сглобена от теб'],
-    desc: c.lines.map(l=>l.item.name + (l.q>1?' ×'+l.q:'')).join(', ') + '.',
+    desc: c.lines.map(l=>itemLabel(l.item) + (l.q>1?' ×'+l.q:'')).join(', ') + '.',
     image: '',
     active:false, custom:true, createdAt:Date.now()
   };
@@ -5760,7 +5784,7 @@ function renderSuggestion(sug){
     giftState.suggestions.push({
       at: Date.now(), total: calc.total,
       reason: sug.reason || (typeof explainBasket==='function' ? explainBasket() : ''),
-      items: calc.lines.map(l=>({id:l.item.id, name:l.item.name, q:l.q, price:l.sale}))
+      items: calc.lines.map(l=>({id:l.item.id, name:itemLabel(l.item), q:l.q, price:l.sale}))
     });
     scheduleChatArchive();
   }
@@ -5771,7 +5795,7 @@ function renderSuggestion(sug){
     <h4>Предложение за ${calc.count} ${calc.count===1?'артикул':'артикула'}</h4>
     <p class="why">${esc(explainBasket())}</p>
     <ul>
-      ${calc.lines.map(l=>`<li><span>${esc(l.item.name)}${l.q>1?` × ${l.q}`:''}</span><span>${fmt(l.sale)}</span></li>`).join('')}
+      ${calc.lines.map(l=>`<li><span>${esc(itemLabel(l.item))}${l.q>1?` × ${l.q}`:''}</span><span>${fmt(l.sale)}</span></li>`).join('')}
       <li><span>${esc(calc.pack.name)}, опаковане и картичка</span><span>${fmt(calc.pack.price)}</span></li>
       ${calc.pct?`<li style="color:var(--sage);"><span>Отстъпка за ${calc.count} артикула</span><span>− ${fmt(calc.discount)}</span></li>`:''}
     </ul>
@@ -5792,7 +5816,7 @@ function renderSuggestion(sug){
       price: Math.round(c.total*100)/100,
       priceMode:'fixed', recipe: sug.recipe.slice(),
       cats:[], tags:['Препоръчана'],
-      desc: c.lines.map(l=>l.item.name + (l.q>1?' ×'+l.q:'')).join(', ') + '.',
+      desc: c.lines.map(l=>itemLabel(l.item) + (l.q>1?' ×'+l.q:'')).join(', ') + '.',
       image:'', active:false, custom:true, createdAt:Date.now()
     };
     STORE.products.push(custom);
@@ -5861,7 +5885,7 @@ async function checkEmailVerification(){
 /* ---------- Свързан модел ---------- */
 function catalogueForAI(){
   return activeItems().map(it=>({
-    id:it.id, name:it.name, unit:it.unit, price:it.sale,
+    id:it.id, name:it.name, unit:unitText(it), price:it.sale,
     category:(itemCatById(it.cat)||{}).name || it.cat
   }));
 }
@@ -6370,7 +6394,7 @@ function renderItemRows(){
         </label>
         ${it.image?`<button class="item-ph-x" data-itemimgdel="${esc(it.id)}" title="Махни снимката" aria-label="Махни снимката">✕</button>`:''}
       </td>
-      <td><b style="font-size:.9rem;">${esc(it.name)}</b>${it.unit?`<br><span style="font-size:.76rem; color:var(--ink-soft);">${esc(it.unit)}</span>`:''}</td>
+      <td><b style="font-size:.9rem;">${esc(itemLabel(it))}</b></td>
       <td>${cat?esc(cat.icon+' '+cat.name):'—'}</td>
       <td class="num">${fmt(it.cost)}</td>
       <td class="num">${fmt(it.sale)}</td>
@@ -6418,6 +6442,12 @@ function renderItemRows(){
   }));
 }
 
+function itemLabelPreview(){
+  const el = $('#ifLabelPreview'); if(!el) return;
+  const name = $('#ifName').value.trim();
+  const tmp = {name: name || 'Име на артикула', qty:$('#ifQty').value.trim(), uom:$('#ifUom').value};
+  el.innerHTML = 'Така ще се вижда на клиента: <b>' + esc(itemLabel(tmp)) + '</b>';
+}
 function itemMarginPreview(){
   const cost = parseFloat($('#ifCost').value)||0;
   const sale = parseFloat($('#ifSale').value)||0;
@@ -6432,7 +6462,12 @@ function openItemForm(id){
   const it = id ? itemById(id) : null;
   $('#itemFormTitle').textContent = it ? 'Редакция на артикул' : 'Нов артикул';
   $('#ifName').value = it ? it.name : '';
-  $('#ifUnit').value = it ? (it.unit||'') : '';
+  let pu = {qty:'', uom:''};
+  if(it) pu = (it.qty!==undefined || it.uom) ? {qty:String(it.qty||''), uom:it.uom||''} : parseUnit(it.unit);
+  $('#ifQty').value = pu.qty;
+  const uoms = UOM_LIST.slice(); if(pu.uom && !uoms.includes(pu.uom)) uoms.push(pu.uom);
+  $('#ifUom').innerHTML = '<option value="">— без мярка —</option>' + uoms.map(u=>`<option value="${esc(u)}" ${u===pu.uom?'selected':''}>${esc(u)}</option>`).join('');
+  itemLabelPreview();
   $('#ifCost').value = it ? it.cost : '';
   $('#ifSale').value = it ? it.sale : '';
   $('#ifActive').checked = it ? it.active!==false : true;
@@ -6459,8 +6494,7 @@ function renderRecipeEditor(){
       const it = itemById(r.id);
       if(!it) return '';
       return `<div class="recipe-row">
-        <span class="rn">${esc(it.name)}</span>
-        <span class="ru">${esc(it.unit||'')}</span>
+        <span class="rn">${esc(itemLabel(it))}</span>
         <div class="stepper">
           <button type="button" data-rdec="${idx}" aria-label="Намали">−</button><span>${r.q}</span><button type="button" data-rinc="${idx}" aria-label="Увеличи">+</button>
         </div>
@@ -6553,6 +6587,8 @@ function wireAdminItems(){
   $('#newItemBtn').addEventListener('click', ()=>openItemForm(null));
   $('#cancelItem').addEventListener('click', closeItemForm);
   ['ifCost','ifSale'].forEach(id=>$('#'+id).addEventListener('input', itemMarginPreview));
+  ['ifName','ifQty'].forEach(id=>$('#'+id).addEventListener('input', itemLabelPreview));
+  $('#ifUom').addEventListener('change', itemLabelPreview);
 
   $('#saveItem').addEventListener('click', ()=>{
     const name = $('#ifName').value.trim();
@@ -6560,7 +6596,8 @@ function wireAdminItems(){
     const sale = parseFloat($('#ifSale').value);
     if(!name || isNaN(cost) || isNaN(sale)){ showToast('Попълни име, покупна и клиентска цена'); return; }
     if(sale < cost && !confirm('Клиентската цена е под покупната — ще продавате на загуба. Да продължа?')) return;
-    const data = {name, unit:$('#ifUnit').value.trim(), cost, sale, cat:$('#ifCat').value,
+    const qty = $('#ifQty').value.trim().replace(/\s+/g,''), uom = $('#ifUom').value;
+    const data = {name, qty, uom, unit:[qty, uom].filter(Boolean).join(' '), cost, sale, cat:$('#ifCat').value,
                   active:$('#ifActive').checked, fun:$('#ifFun').checked};
     if(editingItemId) Object.assign(itemById(editingItemId), data);
     else STORE.items.unshift(Object.assign({id:uid('i'), image:'', createdAt:Date.now()}, data));
