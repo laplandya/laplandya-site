@@ -1403,7 +1403,7 @@ body.admin-mode .chat-fab{display:none;}
     <button class="modal-close" id="closeAdminLogin" aria-label="Затвори">✕</button>
     <h3 style="margin-top:0;">Вход в администрацията</h3>
     <p class="hint">Достъпът е ограничен — въведи потребител и парола.</p>
-    <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username"></div>
+    <div class="field"><label for="alUser">Потребител</label><input id="alUser" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
     <div class="field"><label for="alPass">Парола</label><input id="alPass" type="password" autocomplete="current-password"></div>
     <p id="alError" class="hint" style="color:#c0392b; display:none;">Грешен потребител или парола.</p>
     <div class="form-actions"><button class="btn btn-primary" id="alSubmit" style="width:100%;">Влез</button></div>
@@ -3515,7 +3515,7 @@ function wireAdminLogin(){
     const pass = $('#alPass').value;
     const errEl = $('#alError');
     errEl.style.display = 'none';
-    if(user !== ADMIN_LOGIN_USER){ errEl.style.display=''; return; }
+    if(user.toLowerCase() !== ADMIN_LOGIN_USER.toLowerCase()){ errEl.style.display=''; return; }
     const remote = await verifyAdminPasswordOnServer(pass);
     if(remote === false){ errEl.style.display=''; return; }
     if(remote === null){
