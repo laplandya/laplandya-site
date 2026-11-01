@@ -2330,19 +2330,140 @@ function persist(){
         }
       }
     }
-    setSaveState('local','Запазено в браузъра');
+    const r = await pushStore(false);
+    if(r === 'ok') setSaveState('ok','Запазено онлайн');
+    else if(r === 'conflict') setSaveState('local','Не е запазено — презареди');
+    else if(r === 'error') setSaveState('local','Не е запазено онлайн');
+    else setSaveState('local','Запазено в браузъра');
   }, 1200);
+}
+
+/* ---------- Каталогът на сървъра ----------
+   Артикулите, кутиите, категориите, цените/отстъпките, конфигураторът
+   и настройките на магазина се пазят на сървъра (GET/PUT /store), за да
+   ги виждат всички — клиентите и всяко устройство на админа. Браузърът
+   пази само копие, за да се отваря сайтът веднага.
+   Вградените снимки на продуктите (PRODUCT_IMAGES) вече са в самия
+   сайт, затова към сървъра се пращат само като кратко име
+   ("builtin:whiskey"), не като целите снимки. */
+const CATALOG_KEYS = ['v','categories','products','items','pricing','builder','settings'];
+let storeVersion = null;        // версията на каталога на сървъра, върху която работим
+let storeSyncedJSON = null;     // последното, което е на сървъра — за да не пращаме едно и също
+let storeRemoteState = 'unknown'; // 'loaded' | 'empty' | 'error' | 'unknown'
+let appStarted = false;
+let storeConflictWarned = false;
+
+function builtinImageKeys(){
+  const P = (typeof PRODUCT_IMAGES !== 'undefined') ? PRODUCT_IMAGES : {};
+  const byValue = new Map();
+  Object.keys(P).forEach(k=>byValue.set(P[k], k));
+  return {P, byValue};
+}
+function packCatalog(){
+  const {byValue} = builtinImageKeys();
+  const out = {};
+  CATALOG_KEYS.forEach(k=>{ if(STORE[k] !== undefined) out[k] = STORE[k]; });
+  out.settings = Object.assign({}, STORE.settings||{});
+  delete out.settings.adminToken;
+  out.products = (STORE.products||[]).map(p=> byValue.has(p.image) ? Object.assign({}, p, {image:'builtin:' + byValue.get(p.image)}) : p);
+  return out;
+}
+function applyRemoteCatalog(doc){
+  const {P} = builtinImageKeys();
+  const token = STORE.settings && STORE.settings.adminToken;
+  CATALOG_KEYS.forEach(k=>{ if(doc[k] !== undefined) STORE[k] = doc[k]; });
+  STORE.products = (STORE.products||[]).map(p=>
+    (typeof p.image === 'string' && p.image.indexOf('builtin:') === 0) ? Object.assign({}, p, {image: P[p.image.slice(8)] || ''}) : p);
+  STORE.settings = Object.assign({}, seedStore().settings, doc.settings || {});
+  if(token) STORE.settings.adminToken = token;
+}
+async function fetchRemoteStore(){
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(!base) return {state:'error'};
+  try{
+    const r = await fetch(base + '/store', {cache:'no-store'});
+    if(!r.ok) return {state:'error'};
+    const data = await r.json();
+    if(!data.store) return {state:'empty', version: data.version || 0};
+    return {state:'loaded', store: data.store, version: data.version};
+  }catch(e){ return {state:'error'}; }
+}
+function rerenderAfterRemote(){
+  try{
+    renderStoreChrome(); renderShopTabs(); renderNav(); renderOccasions(); renderFootCats(); renderGrid(); renderCart();
+    renderCheckoutPayment(); renderOccasionSelect(); renderClaimProducts();
+    if(document.body.classList.contains('admin-mode') && typeof adminReady !== 'undefined' && adminReady) renderAdmin();
+  }catch(e){}
+}
+function handleRemoteStore(res){
+  storeRemoteState = res.state;
+  if(res.state === 'loaded'){
+    applyRemoteCatalog(res.store);
+    storeVersion = res.version;
+    storeSyncedJSON = JSON.stringify(packCatalog());
+    writeLocal();
+    if(appStarted) rerenderAfterRemote();
+  } else if(res.state === 'empty'){
+    storeVersion = 0;
+  }
+  maybeInitialPush();
+}
+/* Записва каталога на сървъра. Връща 'ok' | 'conflict' | 'error' | 'skip'
+   ('skip' = не сме влезли като админ, няма какво да правим). */
+async function pushStore(force){
+  const token = STORE.settings && STORE.settings.adminToken;
+  const base = (typeof aiServerBase === 'function') ? aiServerBase() : '';
+  if(!token || !base || typeof isAdminUnlocked !== 'function' || !isAdminUnlocked()) return 'skip';
+  const packed = packCatalog();
+  const json = JSON.stringify(packed);
+  if(!force && json === storeSyncedJSON) return 'ok';
+  if(storeRemoteState !== 'loaded' && storeRemoteState !== 'empty'){
+    // Още не знаем какво има на сървъра — питаме, преди да пишем.
+    const res = await fetchRemoteStore();
+    if(res.state === 'error') return 'error';
+    if(res.state === 'loaded'){ storeRemoteState = 'loaded'; storeVersion = res.version; return warnStoreConflict(); }
+    storeRemoteState = 'empty'; storeVersion = 0;
+  }
+  try{
+    const r = await fetch(base + '/store', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json', 'X-Admin-Token': token},
+      body: JSON.stringify({store: packed, baseVersion: storeVersion})
+    });
+    if(r.status === 409) return warnStoreConflict();
+    if(!r.ok) return 'error';
+    const data = await r.json();
+    storeVersion = data.version;
+    storeRemoteState = 'loaded';
+    storeSyncedJSON = json;
+    return 'ok';
+  }catch(e){ return 'error'; }
+}
+function warnStoreConflict(){
+  if(!storeConflictWarned){
+    storeConflictWarned = true;
+    showToast('Каталогът е променен от друго устройство. Презареди страницата и направи промяната отново.');
+  }
+  return 'conflict';
+}
+/* Първи път след пускането: на сървъра още няма каталог. Щом админът
+   влезе, качваме този, който е в браузъра му (с всичките му промени). */
+async function maybeInitialPush(){
+  if(storeRemoteState !== 'empty') return;
+  if(typeof isAdminUnlocked !== 'function' || !isAdminUnlocked()) return;
+  const r = await pushStore(true);
+  if(r === 'ok'){ setSaveState('ok','Запазено онлайн'); showToast('Каталогът е качен на сървъра — вече се вижда навсякъде'); }
 }
 
 async function initStorage(){
   const hadLocal = loadLocal();
-  try{
-    const res = await fetch('data/store.json', {cache:'no-store'});
-    if(res.ok){
-      const remote = await res.json();
-      if(remote && remote.products) STORE = Object.assign(seedStore(), remote);
-    }
-  }catch(e){}
+  // Каталогът от сървъра. Чакаме го най-много 2,5 секунди — ако сървърът
+  // се събужда (безплатният план заспива), сайтът се показва веднага с
+  // копието от браузъра и се обновява сам, щом каталогът пристигне.
+  const remote = fetchRemoteStore();
+  const early = await Promise.race([remote, new Promise(r=>setTimeout(()=>r(null), 2500))]);
+  if(early) handleRemoteStore(early);
+  else remote.then(handleRemoteStore);
   try{
     if(window.claude && typeof window.claude.use === 'function'){
       artifactApi = await window.claude.use('artifact');
@@ -2350,7 +2471,8 @@ async function initStorage(){
       try{ downloadsApi = await window.claude.use('downloads'); }catch(e){ downloadsApi = null; }
     }
   }catch(e){ artifactApi = null; }
-  setSaveState(saveMode==='artifact' ? 'ok' : 'local', saveMode==='artifact' ? 'Запазено онлайн' : 'Запазено в браузъра');
+  setSaveState(saveMode==='artifact' || storeRemoteState==='loaded' ? 'ok' : 'local',
+               saveMode==='artifact' || storeRemoteState==='loaded' ? 'Запазено онлайн' : 'Запазено в браузъра');
   if(!hadLocal) writeLocal();
 }
 
@@ -3347,6 +3469,7 @@ function applyRoute(){
     }
     $('#adminLoginOverlay').classList.remove('open');
     renderAdmin(); adminReady = true; window.scrollTo(0,0);
+    maybeInitialPush();
     return;
   }
   $('#adminLoginOverlay').classList.remove('open');
@@ -3387,6 +3510,7 @@ function wireAdminLogin(){
     $('#alUser').value=''; $('#alPass').value='';
     overlay.classList.remove('open');
     renderAdmin(); adminReady = true; window.scrollTo(0,0);
+    maybeInitialPush();
   };
   $('#alSubmit').addEventListener('click', doLogin);
   $('#alPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
@@ -4367,7 +4491,10 @@ async function start(){
   await initStorage();
 
   await restoreSession();
-  if(typeof syncApprovedReviewsFromServer === 'function') await syncApprovedReviewsFromServer();
+  if(typeof syncApprovedReviewsFromServer === 'function'){
+    // и тук не чакаме сървъра повече от 2,5 секунди
+    await Promise.race([syncApprovedReviewsFromServer(), new Promise(r=>setTimeout(r, 2500))]);
+  }
   if(typeof checkEmailVerification === 'function') await checkEmailVerification();
   if(!STORE.items || !STORE.items.length) STORE.items = seedItems();
   if(!STORE.pricing) STORE.pricing = seedStore().pricing;
@@ -4375,6 +4502,7 @@ async function start(){
   renderCheckoutPayment(); renderOccasionSelect(); renderClaimProducts();
   wireStore(); wireAccount(); wireSocialAuth(); wireFeatures(); wireChat(); wireAdmin(); wireAdminExtra(); wireAdminItems(); wireAdminLogin();
   applyRoute();
+  appStarted = true;
 }
 
 /* Стартира след като всички скриптове са заредени —
