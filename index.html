@@ -2087,7 +2087,7 @@ function unitText(it){
 }
 function itemLabel(it){
   const u = unitText(it);
-  if(!u) return it.name;
+  if(!u || !/[^\d.,\s]/.test(u)) return it.name; // само число без мярка („1“) не се добавя
   const n = t=>String(t).toLowerCase().replace(/[\s.]/g,'').replace(/гр/g,'г').replace(/ml/g,'мл');
   return n(it.name).includes(n(u)) ? it.name : it.name + ' ' + u;
 }
